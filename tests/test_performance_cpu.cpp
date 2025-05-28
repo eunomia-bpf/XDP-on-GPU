@@ -72,7 +72,8 @@ TEST_CASE("Performance - CPU vs GPU Comparison", "[performance][comparison][benc
     
     // Setup GPU processor
     EventProcessor processor;
-    processor.load_kernel_from_ptx(ptx_code, selected_kernel);
+    ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, selected_kernel);
+    REQUIRE(load_result == ProcessingResult::Success);
     
     // Test with different event counts
     const std::vector<size_t> event_counts = {100, 1000, 10000};
@@ -154,7 +155,8 @@ TEST_CASE("Performance - Multiple Filter Comparison", "[performance][filters][be
         
         // Setup GPU processor for this kernel
         EventProcessor processor;
-        processor.load_kernel_from_ptx(ptx_code, kernel_name);
+        ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_name);
+        REQUIRE(load_result == ProcessingResult::Success);
         
         // Create test data
         std::vector<NetworkEvent> gpu_events(event_count);

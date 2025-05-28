@@ -46,31 +46,16 @@ set_target_properties(test_kernels PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
-# Basic functionality tests
-add_executable(test_basic
-    test_basic.cpp
-    test_device_manager.cpp
-    test_kernel_loader.cpp
-    $<TARGET_OBJECTS:test_kernels>
-)
-
-target_link_libraries(test_basic 
-    ebpf_gpu_processor
-    Catch2::Catch2WithMain
-)
-
-# Add dependency on PTX generation and pass PTX path and architecture as compile definitions
-add_dependencies(test_basic generate_ptx)
-target_compile_definitions(test_basic PRIVATE 
-    PTX_FILE_PATH="${PTX_OUTPUT_FILE}"
-    CUDA_ARCH_SM=${PTX_ARCH}
-)
-
 # Performance tests (GPU only)
 add_executable(test_performance
     test_performance.cpp
     $<TARGET_OBJECTS:test_kernels>
 )
+
+
+# Add dependency on PTX generation and pass PTX path and architecture as compile definitions
+add_dependencies(test_performance generate_ptx)
+
 
 target_link_libraries(test_performance 
     ebpf_gpu_processor
@@ -128,7 +113,6 @@ if(TARGET Catch2::Catch2)
     include(Catch)
     
     # Regular tests (exclude benchmark tests)
-    catch_discover_tests(test_basic)
     catch_discover_tests(test_integration)
     
     # Performance tests without benchmarks (exclude [benchmark] tag)

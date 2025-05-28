@@ -42,7 +42,11 @@ void example_network_event_processing() {
             return;
         }
         
-        processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+        ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+        if (load_result != ProcessingResult::Success) {
+            std::cerr << "Failed to load kernel, error code: " << static_cast<int>(load_result) << std::endl;
+            return;
+        }
         
         // Create some network events for testing
         std::vector<NetworkEvent> events(5);
@@ -91,7 +95,11 @@ void example_single_event_processing() {
             return;
         }
         
-        processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+        ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+        if (load_result != ProcessingResult::Success) {
+            std::cerr << "Failed to load kernel, error code: " << static_cast<int>(load_result) << std::endl;
+            return;
+        }
         
         // Create a single network event
         NetworkEvent event;

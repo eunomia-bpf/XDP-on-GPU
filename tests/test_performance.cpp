@@ -71,8 +71,9 @@ TEST_CASE("Performance - Basic Operations", "[performance][benchmark]") {
     
     // Setup processor once outside benchmark
     EventProcessor processor;
-    processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
-    
+    ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    REQUIRE(load_result == ProcessingResult::Success);
+
     // Warm up GPU (first run is often slower)
     reset_event_actions(events_1000);
     size_t buffer_size = events_1000.size() * sizeof(NetworkEvent);
@@ -109,7 +110,8 @@ TEST_CASE("Performance - Scaling Test", "[performance][benchmark]") {
     
     // Setup processor once
     EventProcessor processor;
-    processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    REQUIRE(load_result == ProcessingResult::Success);
     
     // Test 1K events
     {
@@ -221,7 +223,8 @@ TEST_CASE("Performance - Single vs Multiple Events", "[performance][benchmark]")
     
     // Setup processor once
     EventProcessor processor;
-    processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    REQUIRE(load_result == ProcessingResult::Success);
     
     // Pre-create test data
     const size_t num_events = 1000;
@@ -282,7 +285,8 @@ TEST_CASE("Performance - Memory Transfer vs Compute", "[performance][benchmark]"
     }
     
     EventProcessor processor;
-    processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    REQUIRE(load_result == ProcessingResult::Success);
     
     // Test small events (64B each)
     {

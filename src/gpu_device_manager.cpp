@@ -1,4 +1,5 @@
 #include "gpu_device_manager.hpp"
+#include <cuda.h>
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <stdexcept>
@@ -12,10 +13,22 @@ GpuDeviceManager::GpuDeviceManager() : initialized_(false) {
 void GpuDeviceManager::initialize_devices() {
     if (initialized_) return;
     
+    // Initialize CUDA driver first
+    CUresult cu_result = cuInit(0);
+    if (cu_result != CUDA_SUCCESS) {
+        // If driver init fails, no devices available
+        devices_.clear();
+        initialized_ = true;
+        return;
+    }
+    
     int device_count = 0;
     cudaError_t result = cudaGetDeviceCount(&device_count);
     if (result != cudaSuccess) {
-        throw std::runtime_error("Failed to get CUDA device count");
+        // If device count query fails, no devices available
+        devices_.clear();
+        initialized_ = true;
+        return;
     }
     
     devices_.clear();
@@ -77,9 +90,9 @@ bool GpuDeviceManager::is_device_suitable(int device_id, size_t min_memory) cons
     
     const auto& device = devices_[device_id];
     
-    // Check minimum compute capability (3.5 for modern CUDA features)
-    if (device.compute_capability_major < 3 || 
-        (device.compute_capability_major == 3 && device.compute_capability_minor < 5)) {
+    // Check minimum compute capability (3.0 for basic CUDA features)
+    // Tesla P40 has compute capability 6.1, so this should pass
+    if (device.compute_capability_major < 3) {
         return false;
     }
     

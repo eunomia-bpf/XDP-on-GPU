@@ -19,9 +19,9 @@ public:
     Impl(Impl&&) = default;
     Impl& operator=(Impl&&) = default;
 
-    void load_kernel_from_ptx(const std::string& ptx_code, const std::string& function_name);
-    void load_kernel_from_file(const std::string& file_path, const std::string& function_name);
-    void load_kernel_from_source(const std::string& cuda_source, const std::string& function_name,
+    ProcessingResult load_kernel_from_ptx(const std::string& ptx_code, const std::string& function_name);
+    ProcessingResult load_kernel_from_file(const std::string& file_path, const std::string& function_name);
+    ProcessingResult load_kernel_from_source(const std::string& cuda_source, const std::string& function_name,
                                 const std::vector<std::string>& include_paths,
                                 const std::vector<std::string>& compile_options);
 
@@ -73,6 +73,11 @@ void EventProcessor::Impl::initialize_device() {
         throw std::runtime_error("Invalid max grid size: must be non-negative");
     }
     
+    // Check if any devices are available first
+    if (device_manager_.get_device_count() == 0) {
+        throw std::runtime_error("No CUDA devices available");
+    }
+    
     if (device_id_ < 0) {
         device_id_ = device_manager_.select_best_device();
     }
@@ -81,15 +86,9 @@ void EventProcessor::Impl::initialize_device() {
         throw std::runtime_error("Selected device is not suitable for processing");
     }
     
-    // Initialize CUDA driver
-    CUresult result = cuInit(0);
-    if (result != CUDA_SUCCESS) {
-        throw std::runtime_error("Failed to initialize CUDA driver");
-    }
-    
-    // Get device and create context
+    // Get device and create context (CUDA driver already initialized by device manager)
     CUdevice device;
-    result = cuDeviceGet(&device, device_id_);
+    CUresult result = cuDeviceGet(&device, device_id_);
     if (result != CUDA_SUCCESS) {
         throw std::runtime_error("Failed to get CUDA device");
     }
@@ -107,24 +106,84 @@ void EventProcessor::Impl::initialize_device() {
     buffer_size_ = config_.buffer_size;
 }
 
-void EventProcessor::Impl::load_kernel_from_ptx(const std::string& ptx_code, const std::string& function_name) {
-    KernelLoader loader;
-    module_ = loader.load_from_ptx(ptx_code);
-    kernel_function_ = module_->get_function(function_name);
+ProcessingResult EventProcessor::Impl::load_kernel_from_ptx(const std::string& ptx_code, const std::string& function_name) {
+    try {
+        if (ptx_code.empty()) {
+            return ProcessingResult::InvalidInput;
+        }
+        if (function_name.empty()) {
+            return ProcessingResult::InvalidInput;
+        }
+        
+        KernelLoader loader;
+        module_ = loader.load_from_ptx(ptx_code);
+        if (!module_ || !module_->is_valid()) {
+            return ProcessingResult::KernelError;
+        }
+        
+        kernel_function_ = module_->get_function(function_name);
+        return ProcessingResult::Success;
+    } catch (const std::invalid_argument&) {
+        return ProcessingResult::InvalidInput;
+    } catch (const std::runtime_error&) {
+        return ProcessingResult::KernelError;
+    } catch (...) {
+        return ProcessingResult::Error;
+    }
 }
 
-void EventProcessor::Impl::load_kernel_from_file(const std::string& file_path, const std::string& function_name) {
-    KernelLoader loader;
-    module_ = loader.load_from_file(file_path);
-    kernel_function_ = module_->get_function(function_name);
+ProcessingResult EventProcessor::Impl::load_kernel_from_file(const std::string& file_path, const std::string& function_name) {
+    try {
+        if (file_path.empty()) {
+            return ProcessingResult::InvalidInput;
+        }
+        if (function_name.empty()) {
+            return ProcessingResult::InvalidInput;
+        }
+        
+        KernelLoader loader;
+        module_ = loader.load_from_file(file_path);
+        if (!module_ || !module_->is_valid()) {
+            return ProcessingResult::KernelError;
+        }
+        
+        kernel_function_ = module_->get_function(function_name);
+        return ProcessingResult::Success;
+    } catch (const std::invalid_argument&) {
+        return ProcessingResult::InvalidInput;
+    } catch (const std::runtime_error&) {
+        return ProcessingResult::KernelError;
+    } catch (...) {
+        return ProcessingResult::Error;
+    }
 }
 
-void EventProcessor::Impl::load_kernel_from_source(const std::string& cuda_source, const std::string& function_name,
+ProcessingResult EventProcessor::Impl::load_kernel_from_source(const std::string& cuda_source, const std::string& function_name,
                                                   const std::vector<std::string>& include_paths,
                                                   const std::vector<std::string>& compile_options) {
-    KernelLoader loader;
-    module_ = loader.load_from_cuda_source(cuda_source, include_paths, compile_options);
-    kernel_function_ = module_->get_function(function_name);
+    try {
+        if (cuda_source.empty()) {
+            return ProcessingResult::InvalidInput;
+        }
+        if (function_name.empty()) {
+            return ProcessingResult::InvalidInput;
+        }
+        
+        KernelLoader loader;
+        module_ = loader.load_from_cuda_source(cuda_source, include_paths, compile_options);
+        if (!module_ || !module_->is_valid()) {
+            return ProcessingResult::KernelError;
+        }
+        
+        kernel_function_ = module_->get_function(function_name);
+        return ProcessingResult::Success;
+    } catch (const std::invalid_argument&) {
+        return ProcessingResult::InvalidInput;
+    } catch (const std::runtime_error&) {
+        return ProcessingResult::KernelError;
+    } catch (...) {
+        return ProcessingResult::Error;
+    }
 }
 
 ProcessingResult EventProcessor::Impl::process_event(void* event_data, size_t event_size) {
@@ -137,6 +196,12 @@ ProcessingResult EventProcessor::Impl::process_event(void* event_data, size_t ev
     }
     
     if (ensure_buffer_size(event_size) != ProcessingResult::Success) {
+        return ProcessingResult::DeviceError;
+    }
+    
+    // Set current context to ensure we're using the right device
+    CUresult cu_result = cuCtxSetCurrent(context_);
+    if (cu_result != CUDA_SUCCESS) {
         return ProcessingResult::DeviceError;
     }
     
@@ -158,6 +223,12 @@ ProcessingResult EventProcessor::Impl::process_event(void* event_data, size_t ev
         return ProcessingResult::DeviceError;
     }
     
+    // Ensure all operations complete
+    result = cudaDeviceSynchronize();
+    if (result != cudaSuccess) {
+        return ProcessingResult::DeviceError;
+    }
+    
     return ProcessingResult::Success;
 }
 
@@ -171,6 +242,12 @@ ProcessingResult EventProcessor::Impl::process_events(void* events_buffer, size_
     }
     
     if (ensure_buffer_size(buffer_size) != ProcessingResult::Success) {
+        return ProcessingResult::DeviceError;
+    }
+    
+    // Set current context to ensure we're using the right device
+    CUresult cu_result = cuCtxSetCurrent(context_);
+    if (cu_result != CUDA_SUCCESS) {
         return ProcessingResult::DeviceError;
     }
     
@@ -188,6 +265,12 @@ ProcessingResult EventProcessor::Impl::process_events(void* events_buffer, size_
     
     // Copy results back
     result = cudaMemcpy(events_buffer, device_buffer_, buffer_size, cudaMemcpyDeviceToHost);
+    if (result != cudaSuccess) {
+        return ProcessingResult::DeviceError;
+    }
+    
+    // Ensure all operations complete
+    result = cudaDeviceSynchronize();
     if (result != cudaSuccess) {
         return ProcessingResult::DeviceError;
     }
@@ -292,18 +375,18 @@ EventProcessor::~EventProcessor() = default;
 EventProcessor::EventProcessor(EventProcessor&&) noexcept = default;
 EventProcessor& EventProcessor::operator=(EventProcessor&&) noexcept = default;
 
-void EventProcessor::load_kernel_from_ptx(const std::string& ptx_code, const std::string& function_name) {
-    pimpl_->load_kernel_from_ptx(ptx_code, function_name);
+ProcessingResult EventProcessor::load_kernel_from_ptx(const std::string& ptx_code, const std::string& function_name) {
+    return pimpl_->load_kernel_from_ptx(ptx_code, function_name);
 }
 
-void EventProcessor::load_kernel_from_file(const std::string& file_path, const std::string& function_name) {
-    pimpl_->load_kernel_from_file(file_path, function_name);
+ProcessingResult EventProcessor::load_kernel_from_file(const std::string& file_path, const std::string& function_name) {
+    return pimpl_->load_kernel_from_file(file_path, function_name);
 }
 
-void EventProcessor::load_kernel_from_source(const std::string& cuda_source, const std::string& function_name,
+ProcessingResult EventProcessor::load_kernel_from_source(const std::string& cuda_source, const std::string& function_name,
                                             const std::vector<std::string>& include_paths,
                                             const std::vector<std::string>& compile_options) {
-    pimpl_->load_kernel_from_source(cuda_source, function_name, include_paths, compile_options);
+    return pimpl_->load_kernel_from_source(cuda_source, function_name, include_paths, compile_options);
 }
 
 ProcessingResult EventProcessor::process_event(void* event_data, size_t event_size) {
@@ -328,12 +411,12 @@ bool EventProcessor::is_ready() const {
 
 // Utility functions
 std::vector<GpuDeviceInfo> get_available_devices() {
-    GpuDeviceManager manager;
+    static GpuDeviceManager manager; // Use static singleton for consistent device detection
     return manager.get_all_devices();
 }
 
 int select_best_device(size_t min_memory) {
-    GpuDeviceManager manager;
+    static GpuDeviceManager manager; // Use static singleton
     return manager.select_best_device();
 }
 
