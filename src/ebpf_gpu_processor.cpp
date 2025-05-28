@@ -199,7 +199,8 @@ ProcessingResult EventProcessor::Impl::process_event(void* event_data, size_t ev
     return ProcessingResult::Success;
 }
 
-ProcessingResult EventProcessor::Impl::process_events(void* events_buffer, size_t buffer_size, size_t event_count) {
+ProcessingResult EventProcessor::Impl::process_events(void* events_buffer, size_t buffer_size, size_t event_count,
+                                                   bool is_async) {
     if (!is_ready()) {
         return ProcessingResult::KernelError;
     }
@@ -208,41 +209,96 @@ ProcessingResult EventProcessor::Impl::process_events(void* events_buffer, size_
         return ProcessingResult::InvalidInput;
     }
     
-    if (ensure_buffer_size(buffer_size) != ProcessingResult::Success) {
-        return ProcessingResult::DeviceError;
-    }
-    
-    // Use ensure_context_current instead of direct context setting
+    // Ensure the CUDA context is current
     ProcessingResult ctx_result = ensure_context_current();
     if (ctx_result != ProcessingResult::Success) {
         return ProcessingResult::DeviceError;
     }
     
+    // Ensure the device buffer is large enough
+    ProcessingResult buffer_result = ensure_buffer_size(buffer_size);
+    if (buffer_result != ProcessingResult::Success) {
+        return ProcessingResult::DeviceError;
+    }
+    
+    // Get a stream for this operation
+    cudaStream_t stream = get_available_stream();
+    
+    // Always use asynchronous API internally
     cudaError_t result;
     
-    // Direct copy from pageable memory to device
-    result = cudaMemcpy(device_buffer_, events_buffer, buffer_size, cudaMemcpyHostToDevice);
+    // Transfer data to device asynchronously
+    result = cudaMemcpyAsync(device_buffer_, events_buffer, buffer_size, 
+                          cudaMemcpyHostToDevice, stream);
     if (result != cudaSuccess) {
         return ProcessingResult::DeviceError;
     }
     
-    // Launch kernel
-    ProcessingResult launch_result = launch_kernel(device_buffer_, event_count);
-    if (launch_result != ProcessingResult::Success) {
-        return launch_result;
+    // Launch kernel asynchronously
+    void* kernel_args[] = {
+        &device_buffer_,
+        &event_count
+    };
+    
+    // Calculate grid and block dimensions using config values
+    int block_size = config_.block_size;
+    int grid_size = (event_count + block_size - 1) / block_size;
+    
+    // Apply max grid size limit if configured
+    if (config_.max_grid_size > 0 && grid_size > config_.max_grid_size) {
+        grid_size = config_.max_grid_size;
     }
     
-    // Direct copy from device to user buffer
-    result = cudaMemcpy(events_buffer, device_buffer_, buffer_size, cudaMemcpyDeviceToHost);
+    // Launch kernel asynchronously using the CUDA driver API
+    CUresult cu_result = cuLaunchKernel(
+        kernel_function_,
+        grid_size, 1, 1,    // Grid dimensions
+        block_size, 1, 1,   // Block dimensions
+        config_.shared_memory_size,  // Shared memory (configurable)
+        stream,             // Stream
+        kernel_args,        // Parameters
+        nullptr             // Extra
+    );
+    
+    if (cu_result != CUDA_SUCCESS) {
+        return ProcessingResult::KernelError;
+    }
+    
+    // Copy results back to host asynchronously
+    result = cudaMemcpyAsync(events_buffer, device_buffer_, buffer_size,
+                          cudaMemcpyDeviceToHost, stream);
     if (result != cudaSuccess) {
         return ProcessingResult::DeviceError;
     }
     
-    // Ensure all operations complete
-    result = cudaDeviceSynchronize();
-    if (result != cudaSuccess) {
-        return ProcessingResult::DeviceError;
+    // If we have a callback and we're in async mode, set up the callback
+    if (is_async && config_.default_callback) {
+        // Create a batch object to pass to the callback
+        EventBatch* batch = new EventBatch(
+            events_buffer,
+            buffer_size,
+            event_count,
+            config_.default_callback,
+            stream,
+            false  // doesn't own the memory
+        );
+        
+        // Register callback
+        result = cudaStreamAddCallback(stream, batch_completion_callback, batch, 0);
+        if (result != cudaSuccess) {
+            delete batch;
+            return ProcessingResult::DeviceError;
+        }
+    } 
+    // If not async, we need to synchronize before returning
+    else if (!is_async) {
+        // For synchronous operation, wait for everything to complete
+        result = cudaStreamSynchronize(stream);
+        if (result != cudaSuccess) {
+            return ProcessingResult::DeviceError;
+        }
     }
+    // If async but no callback, we just return (operations continue in background)
     
     return ProcessingResult::Success;
 }
@@ -290,12 +346,6 @@ ProcessingResult EventProcessor::Impl::launch_kernel(void* device_data, size_t e
         return ProcessingResult::KernelError;
     }
     
-    // Use ensure_context_current instead of direct context setting
-    ProcessingResult ctx_result = ensure_context_current();
-    if (ctx_result != ProcessingResult::Success) {
-        return ProcessingResult::DeviceError;
-    }
-    
     // Set up kernel parameters
     void* args[] = {
         &device_data,
@@ -325,13 +375,6 @@ ProcessingResult EventProcessor::Impl::launch_kernel(void* device_data, size_t e
     if (result != CUDA_SUCCESS) {
         return ProcessingResult::KernelError;
     }
-    
-    // Synchronize
-    cudaError_t cuda_result = cudaDeviceSynchronize();
-    if (cuda_result != cudaSuccess) {
-        return ProcessingResult::DeviceError;
-    }
-    
     return ProcessingResult::Success;
 }
 
@@ -362,8 +405,9 @@ ProcessingResult EventProcessor::process_event(void* event_data, size_t event_si
     return pimpl_->process_event(event_data, event_size);
 }
 
-ProcessingResult EventProcessor::process_events(void* events_buffer, size_t buffer_size, size_t event_count) {
-    return pimpl_->process_events(events_buffer, buffer_size, event_count);
+ProcessingResult EventProcessor::process_events(void* events_buffer, size_t buffer_size, size_t event_count,
+                                            bool is_async) {
+    return pimpl_->process_events(events_buffer, buffer_size, event_count, is_async);
 }
 
 GpuDeviceInfo EventProcessor::get_device_info() const {
@@ -559,102 +603,6 @@ ProcessingResult EventProcessor::Impl::process_batch_internal(const EventBatch& 
     return ProcessingResult::Success;
 }
 
-ProcessingResult EventProcessor::Impl::process_event_async(void* events_buffer, size_t buffer_size, size_t event_count,
-                                                     EventProcessingCallback callback) {
-    if (!is_ready()) {
-        return ProcessingResult::KernelError;
-    }
-    
-    if (!events_buffer || buffer_size == 0 || event_count == 0) {
-        return ProcessingResult::InvalidInput;
-    }
-    
-    // Ensure the CUDA context is current
-    ProcessingResult ctx_result = ensure_context_current();
-    if (ctx_result != ProcessingResult::Success) {
-        return ProcessingResult::DeviceError;
-    }
-    
-    // Get a stream for this batch using round-robin scheduling
-    cudaStream_t stream = get_available_stream();
-    
-    // Create a batch object to pass to the callback
-    EventBatch* batch = new EventBatch(
-        events_buffer,
-        buffer_size,
-        event_count,
-        callback,
-        stream,
-        false  // doesn't own the memory
-    );
-    
-    // Ensure the device buffer is large enough
-    ProcessingResult buffer_result = ensure_buffer_size(buffer_size);
-    if (buffer_result != ProcessingResult::Success) {
-        delete batch;
-        return ProcessingResult::DeviceError;
-    }
-    
-    // Transfer batch to device asynchronously
-    // This starts the pipeline of operations
-    cudaError_t result = cudaMemcpyAsync(device_buffer_, events_buffer, buffer_size, 
-                           cudaMemcpyHostToDevice, stream);
-    if (result != cudaSuccess) {
-        delete batch;
-        return ProcessingResult::DeviceError;
-    }
-    
-    // Set up kernel parameters
-    void* args[] = {
-        &device_buffer_,  // Use the shared device buffer
-        (void*)&event_count
-    };
-    
-    // Calculate grid and block dimensions using config values
-    int block_size = config_.block_size;
-    int grid_size = (event_count + block_size - 1) / block_size;
-    
-    // Apply max grid size limit if configured
-    if (config_.max_grid_size > 0 && grid_size > config_.max_grid_size) {
-        grid_size = config_.max_grid_size;
-    }
-    
-    // Launch kernel asynchronously on the selected stream
-    // This will execute as soon as the memory transfer completes
-    CUresult cu_result = cuLaunchKernel(
-        kernel_function_,
-        grid_size, 1, 1,    // Grid dimensions
-        block_size, 1, 1,   // Block dimensions
-        config_.shared_memory_size,  // Shared memory (configurable)
-        stream,             // Use the selected stream
-        args,               // Parameters
-        nullptr             // Extra
-    );
-    
-    if (cu_result != CUDA_SUCCESS) {
-        delete batch;
-        return ProcessingResult::KernelError;
-    }
-    
-    // Copy results back to host asynchronously (still in the same stream)
-    // This will execute after the kernel completes
-    result = cudaMemcpyAsync(events_buffer, device_buffer_, buffer_size,
-                           cudaMemcpyDeviceToHost, stream);
-    if (result != cudaSuccess) {
-        delete batch;
-        return ProcessingResult::DeviceError;
-    }
-    
-    // Add a callback to be executed when all operations in the stream complete
-    result = cudaStreamAddCallback(stream, batch_completion_callback, batch, 0);
-    if (result != cudaSuccess) {
-        delete batch;
-        return ProcessingResult::DeviceError;
-    }
-    
-    return ProcessingResult::Success;
-}
-
 // Implementation of the synchronize_async_operations method
 ProcessingResult EventProcessor::Impl::synchronize_async_operations() {
     if (!is_ready()) {
@@ -675,18 +623,13 @@ ProcessingResult EventProcessor::Impl::synchronize_async_operations() {
         }
     }
     
+    // Also do a device synchronize to catch any operations not tied to our streams
+    cudaError_t result = cudaDeviceSynchronize();
+    if (result != cudaSuccess) {
+        return ProcessingResult::DeviceError;
+    }
+    
     return ProcessingResult::Success;
-}
-
-// EventProcessor public interface implementation
-ProcessingResult EventProcessor::process_event_async(void* events_buffer, size_t buffer_size, size_t event_count,
-                                               EventProcessingCallback callback) {
-    return pimpl_->process_event_async(events_buffer, buffer_size, event_count, callback);
-}
-
-// Implementation of the public synchronize_async_operations method
-ProcessingResult EventProcessor::synchronize_async_operations() {
-    return pimpl_->synchronize_async_operations();
 }
 
 // Utility functions for pinned memory management
@@ -764,6 +707,11 @@ ProcessingResult EventProcessor::Impl::ensure_context_current() {
     }
     
     return ProcessingResult::Success;
+}
+
+// Implementation of the public synchronize_async_operations method
+ProcessingResult EventProcessor::synchronize_async_operations() {
+    return pimpl_->synchronize_async_operations();
 }
 
 } // namespace ebpf_gpu 

@@ -29,11 +29,8 @@ public:
                                 const std::vector<std::string>& compile_options);
 
     ProcessingResult process_event(void* event_data, size_t event_size);
-    ProcessingResult process_events(void* events_buffer, size_t buffer_size, size_t event_count);
-    
-    // Async batch processing
-    ProcessingResult process_event_async(void* events_buffer, size_t buffer_size, size_t event_count,
-                                        EventProcessingCallback callback);
+    ProcessingResult process_events(void* events_buffer, size_t buffer_size, size_t event_count,
+                                   bool is_async = false);
     
     // Synchronization for async operations
     ProcessingResult synchronize_async_operations();

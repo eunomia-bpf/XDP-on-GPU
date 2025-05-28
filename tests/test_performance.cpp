@@ -433,6 +433,9 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
         // Then, do async batch processing
         reset_event_actions(events);
         
+        // Set the default callback in the config
+        config.default_callback = batch_complete_callback;
+     
         const size_t batch_size = test_config::batch_size;
         const size_t num_batches = total_events / batch_size;
         
@@ -446,21 +449,25 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
                     void* batch_start = &events[i * batch_size];
                     size_t batch_size_bytes = batch_size * sizeof(NetworkEvent);
                     
-                    processor.process_event_async(
+                    processor.process_events(
                         batch_start, 
                         batch_size_bytes, 
                         batch_size,
-                        batch_complete_callback
+                        true  // is_async
                     );
                 }
+
+                // Synchronize the async operations
+                ProcessingResult sync_result = processor.synchronize_async_operations();
+                REQUIRE(sync_result == ProcessingResult::Success);
                 
                 // Wait for all batches to complete using busy-wait on the atomic counter
                 // This avoids the mutex/condition variable overhead
-                while (completion_count.load(std::memory_order_acquire) < num_batches) {
+                //while (completion_count.load(std::memory_order_acquire) < num_batches) {
                     // Small delay to reduce CPU usage while spinning
                     // std::this_thread::yield();
                     // spin 
-                }
+                //}
                 
                 // Return number of completed batches
                 return num_batches;

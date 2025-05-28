@@ -37,6 +37,7 @@ public:
         
         // Async configuration
         int max_stream_count;  // Maximum number of CUDA streams (0 for default)
+        EventProcessingCallback default_callback = nullptr;  // Default callback for async operations
         
         Config() : device_id(-1), 
                   buffer_size(1024 * 1024), 
@@ -45,7 +46,8 @@ public:
                   block_size(256),  // Good default for most GPUs
                   shared_memory_size(0),  // No shared memory by default
                   max_grid_size(65535),  // CUDA maximum grid dimension
-                  max_stream_count(4)    // Default number of CUDA streams
+                  max_stream_count(4),    // Default number of CUDA streams
+                  default_callback(nullptr)
         {}
     };
 
@@ -69,27 +71,23 @@ public:
     // Single event processing
     ProcessingResult process_event(void* event_data, size_t event_size);
     
-    // Multiple events processing (zero-copy)
-    ProcessingResult process_events(void* events_buffer, size_t buffer_size, size_t event_count);
-    
-    // Enhanced batch processing
     /**
-     * @brief Process a batch of events asynchronously with a callback
+     * @brief Process multiple events, either synchronously or asynchronously
      * 
-     * This method processes multiple events in batch mode and executes the provided callback
-     * function when processing is complete. This allows for overlapping computation with 
-     * other operations in the application.
+     * This method processes multiple events in batch mode. When in synchronous mode,
+     * it blocks until processing is complete. In asynchronous mode, it queues the 
+     * batch for processing and returns immediately.
      * 
      * @param events_buffer Pointer to the buffer containing multiple events
      * @param buffer_size Total size of the buffer in bytes
      * @param event_count Number of events in the buffer
-     * @param callback Function to call when processing completes with (result, data, size)
+     * @param is_async Whether to process events asynchronously (default: false)
      * 
-     * @return ProcessingResult::Success if the batch was successfully queued for processing,
-     *         or an error code if the batch could not be queued
+     * @return ProcessingResult::Success if the batch was successfully processed or queued,
+     *         or an error code if the operation failed
      */
-    ProcessingResult process_event_async(void* events_buffer, size_t buffer_size, size_t event_count,
-                                        EventProcessingCallback callback);
+    ProcessingResult process_events(void* events_buffer, size_t buffer_size, size_t event_count,
+                                   bool is_async = false);
 
     /**
      * @brief Synchronously wait for all previously submitted async operations to complete
