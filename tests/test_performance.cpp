@@ -10,8 +10,16 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <array>
 
 using namespace ebpf_gpu;
+
+// Configuration for test parameters - enables easy changing of test sizes
+namespace test_config {
+    const std::vector<size_t> scaling_sizes = {100, 1000, 10000, 100000, 1000000};
+    const size_t single_vs_batch_size = 1000;
+    const size_t memory_transfer_size = 100;
+}
 
 // Helper function to create test events
 void create_test_events(std::vector<NetworkEvent>& events) {
@@ -54,6 +62,51 @@ std::vector<NetworkEvent> copy_events(const std::vector<NetworkEvent>& events) {
     return events; // Simple copy
 }
 
+// Helper function to format sizes (1000 -> "1K", 1000000 -> "1M")
+std::string format_size(size_t size) {
+    if (size >= 1000000) return std::to_string(size / 1000000) + "M";
+    if (size >= 1000) return std::to_string(size / 1000) + "K";
+    return std::to_string(size);
+}
+
+// Helper function to check environment and setup processor
+bool setup_test_environment(EventProcessor& processor) {
+    auto devices = get_available_devices();
+    if (devices.empty()) {
+        return false;
+    }
+    
+    const char* ptx_code = get_test_ptx();
+    if (!ptx_code) {
+        return false;
+    }
+    
+    ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    return load_result == ProcessingResult::Success;
+}
+
+// Helper function to run benchmark with warm-up and validation
+template<typename BenchmarkFunc>
+void run_benchmark(const std::string& name, EventProcessor& processor, 
+                  std::vector<NetworkEvent>& events, BenchmarkFunc&& benchmark_func) {
+    // Warm up
+    reset_event_actions(events);
+    size_t buffer_size = events.size() * sizeof(NetworkEvent);
+    processor.process_events(events.data(), buffer_size, events.size());
+    
+    // Run benchmark
+    BENCHMARK_ADVANCED(name.c_str())(Catch::Benchmark::Chronometer meter) {
+        reset_event_actions(events);
+        meter.measure(benchmark_func);
+    };
+    
+    // Validate
+    reset_event_actions(events);
+    ProcessingResult final_result = processor.process_events(events.data(), buffer_size, events.size());
+    REQUIRE(final_result == ProcessingResult::Success);
+    REQUIRE(validate_results(events));
+}
+
 TEST_CASE("Performance - Basic Operations", "[performance][benchmark]") {
     auto devices = get_available_devices();
     if (devices.empty()) {
@@ -82,7 +135,6 @@ TEST_CASE("Performance - Basic Operations", "[performance][benchmark]") {
     BENCHMARK_ADVANCED("Event processing - 1000 events")(Catch::Benchmark::Chronometer meter) {
         // Reset data state before measurement
         reset_event_actions(events_1000);
-        size_t buffer_size = events_1000.size() * sizeof(NetworkEvent);
         
         // Measure only the GPU processing
         meter.measure([&] {
@@ -113,108 +165,39 @@ TEST_CASE("Performance - Scaling Test", "[performance][benchmark]") {
     ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
     REQUIRE(load_result == ProcessingResult::Success);
     
-    // Test 1K events
-    {
-        std::vector<NetworkEvent> events(1000);
-        create_test_events(events);
-        size_t buffer_size = events.size() * sizeof(NetworkEvent);
-        
-        // register the events buffer 
-        ProcessingResult register_result = processor.register_host_buffer(events.data(), buffer_size);
-        REQUIRE(register_result == ProcessingResult::Success);
-
-        // Warm up
-        reset_event_actions(events);
-        processor.process_events(events.data(), buffer_size, events.size());
-        
-        BENCHMARK_ADVANCED("Scaling - 1K events")(Catch::Benchmark::Chronometer meter) {
-            reset_event_actions(events);
-            meter.measure([&] {
-                return processor.process_events(events.data(), buffer_size, events.size());
-            });
-        };
-        
-        // Validate after benchmark
-        reset_event_actions(events);
-        ProcessingResult final_result = processor.process_events(events.data(), buffer_size, events.size());
-        REQUIRE(final_result == ProcessingResult::Success);
-        REQUIRE(validate_results(events));
-
-        // unregister the events buffer
-        ProcessingResult unregister_result = processor.unregister_host_buffer(events.data());
-        REQUIRE(unregister_result == ProcessingResult::Success);
-    }
-    
-    // Test 10K events
-    {
-        std::vector<NetworkEvent> events(10000);
-        create_test_events(events);
-        size_t buffer_size = events.size() * sizeof(NetworkEvent);
-        
-        // Warm up
-        reset_event_actions(events);
-        processor.process_events(events.data(), buffer_size, events.size());
-        
-        BENCHMARK_ADVANCED("Scaling - 10K events")(Catch::Benchmark::Chronometer meter) {
-            reset_event_actions(events);
-            meter.measure([&] {
-                return processor.process_events(events.data(), buffer_size, events.size());
-            });
-        };
-        
-        // Validate after benchmark
-        reset_event_actions(events);
-        ProcessingResult final_result = processor.process_events(events.data(), buffer_size, events.size());
-        REQUIRE(final_result == ProcessingResult::Success);
-        REQUIRE(validate_results(events));
-    }
-    
-    // Test 100K events
-    {
-        std::vector<NetworkEvent> events(100000);
-        create_test_events(events);
-        size_t buffer_size = events.size() * sizeof(NetworkEvent);
-        
-        // Warm up
-        reset_event_actions(events);
-        processor.process_events(events.data(), buffer_size, events.size());
-        
-        BENCHMARK_ADVANCED("Scaling - 100K events")(Catch::Benchmark::Chronometer meter) {
-            reset_event_actions(events);
-            meter.measure([&] {
-                return processor.process_events(events.data(), buffer_size, events.size());
-            });
-        };
-        
-        // Validate after benchmark
-        reset_event_actions(events);
-        ProcessingResult final_result = processor.process_events(events.data(), buffer_size, events.size());
-        REQUIRE(final_result == ProcessingResult::Success);
-        REQUIRE(validate_results(events));
-    }
-
-    // Test 1M events
-    {
-        std::vector<NetworkEvent> events(1000000);
-        create_test_events(events);
-        size_t buffer_size = events.size() * sizeof(NetworkEvent);
-        
-        // Warm up
-        reset_event_actions(events);
-        processor.process_events(events.data(), buffer_size, events.size());
-
-        BENCHMARK_ADVANCED("Scaling - 1M events")(Catch::Benchmark::Chronometer meter) {
-            reset_event_actions(events);
-            meter.measure([&] {
-                return processor.process_events(events.data(), buffer_size, events.size());
-            });
-        };
-
-        // Validate after benchmark
-        reset_event_actions(events);
-        ProcessingResult final_result = processor.process_events(events.data(), buffer_size, events.size());
-        REQUIRE(final_result == ProcessingResult::Success);
-        REQUIRE(validate_results(events));
+    // Test different event counts
+    for (size_t event_count : test_config::scaling_sizes) {
+        // Use a section to provide better organization in output
+        SECTION("Events: " + format_size(event_count)) {
+            std::vector<NetworkEvent> events(event_count);
+            create_test_events(events);
+            size_t buffer_size = events.size() * sizeof(NetworkEvent);
+            
+            // Only use pinned memory for 1K test
+            bool use_pinned_memory = (event_count == 1000);
+            
+            if (use_pinned_memory) {
+                // Register the events buffer
+                ProcessingResult register_result = processor.register_host_buffer(events.data(), buffer_size);
+                REQUIRE(register_result == ProcessingResult::Success);
+                
+                // Run benchmark with pinned memory
+                std::string bench_name = "Scaling - " + format_size(event_count) + " events (pinned)";
+                run_benchmark(bench_name, processor, events, [&] {
+                    return processor.process_events(events.data(), buffer_size, events.size());
+                });
+                
+                // Unregister the events buffer
+                ProcessingResult unregister_result = processor.unregister_host_buffer(events.data());
+                REQUIRE(unregister_result == ProcessingResult::Success);
+            } else {
+                // Run benchmark with pageable memory
+                std::string bench_name = "Scaling - " + format_size(event_count) + " events";
+                run_benchmark(bench_name, processor, events, [&] {
+                    return processor.process_events(events.data(), buffer_size, events.size());
+                });
+            }
+        }
     }
 }
 
@@ -235,27 +218,23 @@ TEST_CASE("Performance - Single vs Multiple Events", "[performance][benchmark]")
     REQUIRE(load_result == ProcessingResult::Success);
     
     // Pre-create test data
-    const size_t num_events = 1000;
+    const size_t num_events = test_config::single_vs_batch_size;
     std::vector<NetworkEvent> events(num_events);
     create_test_events(events);
     
-    // Warm up
-    reset_event_actions(events);
-    size_t buffer_size = events.size() * sizeof(NetworkEvent);
-    processor.process_events(events.data(), buffer_size, events.size());
-    
-    BENCHMARK_ADVANCED("Multiple events - 1K events batch")(Catch::Benchmark::Chronometer meter) {
-        reset_event_actions(events);
+    // Batch processing benchmark
+    {
         size_t buffer_size = events.size() * sizeof(NetworkEvent);
-        
-        meter.measure([&] {
+        std::string bench_name = "Multiple events - " + format_size(num_events) + " events batch";
+        run_benchmark(bench_name, processor, events, [&] {
             return processor.process_events(events.data(), buffer_size, events.size());
         });
-    };
+    }
     
-    BENCHMARK_ADVANCED("Single events - 1K individual calls")(Catch::Benchmark::Chronometer meter) {
-        NetworkEvent single_event = events[0];
-        
+    // Single event processing benchmark
+    NetworkEvent single_event = events[0];
+    BENCHMARK_ADVANCED(("Single events - " + format_size(num_events) + " individual calls").c_str())
+    (Catch::Benchmark::Chronometer meter) {
         meter.measure([&] {
             int total_result = 0;
             for (size_t i = 0; i < num_events; i++) {
@@ -267,14 +246,7 @@ TEST_CASE("Performance - Single vs Multiple Events", "[performance][benchmark]")
         });
     };
     
-    // Validate results after benchmarks
-    reset_event_actions(events);
-    ProcessingResult final_result = processor.process_events(events.data(), buffer_size, events.size());
-    REQUIRE(final_result == ProcessingResult::Success);
-    REQUIRE(validate_results(events));
-    
     // Validate single event processing
-    NetworkEvent single_event = events[0];
     single_event.action = 0;
     ProcessingResult single_result = processor.process_event(&single_event, sizeof(NetworkEvent));
     REQUIRE(single_result == ProcessingResult::Success);
@@ -296,10 +268,8 @@ TEST_CASE("Performance - Memory Transfer vs Compute", "[performance][benchmark]"
     ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
     REQUIRE(load_result == ProcessingResult::Success);
     
-    // Test small events (64B each)
-    {
-        const size_t event_count = 100;
-        const size_t event_size_multiplier = 1;
+    auto run_memory_transfer_test = [&](const std::string& test_name, size_t event_size_multiplier) {
+        const size_t event_count = test_config::memory_transfer_size;
         
         std::vector<std::vector<uint8_t>> event_buffers;
         event_buffers.reserve(event_count);
@@ -326,7 +296,7 @@ TEST_CASE("Performance - Memory Transfer vs Compute", "[performance][benchmark]"
             processor.process_event(buffer.data(), buffer.size());
         }
         
-        BENCHMARK_ADVANCED("Small events - 100 events (64B each)")(Catch::Benchmark::Chronometer meter) {
+        BENCHMARK_ADVANCED(test_name.c_str())(Catch::Benchmark::Chronometer meter) {
             meter.measure([&] {
                 int total_result = 0;
                 for (auto& buffer : event_buffers) {
@@ -338,51 +308,13 @@ TEST_CASE("Performance - Memory Transfer vs Compute", "[performance][benchmark]"
                 return total_result;
             });
         };
-    }
+    };
+    
+    // Test small events (64B each)
+    run_memory_transfer_test("Small events - 100 events (64B each)", 1);
     
     // Test large events (1KB each)
-    {
-        const size_t event_count = 100;
-        const size_t event_size_multiplier = 16;
-        
-        std::vector<std::vector<uint8_t>> event_buffers;
-        event_buffers.reserve(event_count);
-        
-        for (size_t i = 0; i < event_count; i++) {
-            size_t padded_size = sizeof(NetworkEvent) + (event_size_multiplier * 64);
-            event_buffers.emplace_back(padded_size, 0);
-            
-            // Place NetworkEvent at the beginning
-            NetworkEvent* event = reinterpret_cast<NetworkEvent*>(event_buffers[i].data());
-            event->data = nullptr;
-            event->length = 64;
-            event->timestamp = i;
-            event->src_ip = 0xC0A80001;
-            event->dst_ip = 0x08080808;
-            event->src_port = 1024;
-            event->dst_port = 80;
-            event->protocol = 6;
-            event->action = 0;
-        }
-        
-        // Warm up
-        for (auto& buffer : event_buffers) {
-            processor.process_event(buffer.data(), buffer.size());
-        }
-        
-        BENCHMARK_ADVANCED("Large events - 100 events (1KB each)")(Catch::Benchmark::Chronometer meter) {
-            meter.measure([&] {
-                int total_result = 0;
-                for (auto& buffer : event_buffers) {
-                    // Reset action
-                    reinterpret_cast<NetworkEvent*>(buffer.data())->action = 0;
-                    ProcessingResult result = processor.process_event(buffer.data(), buffer.size());
-                    total_result += static_cast<int>(result);
-                }
-                return total_result;
-            });
-        };
-    }
+    run_memory_transfer_test("Large events - 100 events (1KB each)", 16);
 }
 
 TEST_CASE("Performance - Pinned vs Pageable Memory", "[performance][benchmark]") {
@@ -400,37 +332,21 @@ TEST_CASE("Performance - Pinned vs Pageable Memory", "[performance][benchmark]")
     ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
     REQUIRE(load_result == ProcessingResult::Success);
     
-    // Test different sizes to see scaling behavior
-    std::vector<size_t> test_sizes = {1000, 10000, 100000, 1000000};
-    
-    for (size_t event_count : test_sizes) {
+    for (size_t event_count : test_config::scaling_sizes) {
         SECTION("Events: " + std::to_string(event_count)) {
-            // Test with pageable memory (std::vector)
+            // Test with pageable memory
             {
                 std::vector<NetworkEvent> events(event_count);
                 create_test_events(events);
                 size_t buffer_size = events.size() * sizeof(NetworkEvent);
                 
-                // Warm up
-                reset_event_actions(events);
-                processor.process_events(events.data(), buffer_size, events.size());
-                
-                std::string bench_name = "Pageable memory - " + std::to_string(event_count) + " events";
-                BENCHMARK_ADVANCED(bench_name.c_str())(Catch::Benchmark::Chronometer meter) {
-                    reset_event_actions(events);
-                    meter.measure([&] {
-                        return processor.process_events(events.data(), buffer_size, events.size());
-                    });
-                };
-                
-                // Validate after benchmark
-                reset_event_actions(events);
-                ProcessingResult final_result = processor.process_events(events.data(), buffer_size, events.size());
-                REQUIRE(final_result == ProcessingResult::Success);
-                REQUIRE(validate_results(events));
+                std::string bench_name = "Pageable memory - " + format_size(event_count) + " events";
+                run_benchmark(bench_name, processor, events, [&] {
+                    return processor.process_events(events.data(), buffer_size, events.size());
+                });
             }
             
-            // Test with registered pinned memory (same std::vector but registered)
+            // Test with registered pinned memory
             {
                 std::vector<NetworkEvent> events(event_count);
                 create_test_events(events);
@@ -440,23 +356,10 @@ TEST_CASE("Performance - Pinned vs Pageable Memory", "[performance][benchmark]")
                 ProcessingResult register_result = processor.register_host_buffer(events.data(), buffer_size);
                 REQUIRE(register_result == ProcessingResult::Success);
                 
-                // Warm up
-                reset_event_actions(events);
-                processor.process_events(events.data(), buffer_size, events.size());
-                
-                std::string bench_name = "Registered pinned memory - " + std::to_string(event_count) + " events";
-                BENCHMARK_ADVANCED(bench_name.c_str())(Catch::Benchmark::Chronometer meter) {
-                    reset_event_actions(events);
-                    meter.measure([&] {
-                        return processor.process_events(events.data(), buffer_size, events.size());
-                    });
-                };
-                
-                // Validate after benchmark
-                reset_event_actions(events);
-                ProcessingResult final_result = processor.process_events(events.data(), buffer_size, events.size());
-                REQUIRE(final_result == ProcessingResult::Success);
-                REQUIRE(validate_results(events));
+                std::string bench_name = "Registered pinned memory - " + format_size(event_count) + " events";
+                run_benchmark(bench_name, processor, events, [&] {
+                    return processor.process_events(events.data(), buffer_size, events.size());
+                });
                 
                 // Unregister the buffer
                 ProcessingResult unregister_result = processor.unregister_host_buffer(events.data());
