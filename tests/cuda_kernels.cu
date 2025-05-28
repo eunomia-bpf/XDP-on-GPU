@@ -16,16 +16,8 @@ struct NetworkEvent {
     uint8_t action;
 };
 
-// Simple packet filtering kernel
-__global__ void simple_packet_filter(NetworkEvent* events, size_t num_events) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    if (idx >= num_events) {
-        return;
-    }
-    
-    NetworkEvent* event = &events[idx];
-    
+// Helper device function for simple packet logic
+__device__ void simple_packet_logic(NetworkEvent* event) {
     // Simple filtering logic - drop packets from specific IP
     if (event->src_ip == 0xC0A80001) { // 192.168.0.1
         event->action = 0; // DROP
@@ -35,6 +27,21 @@ __global__ void simple_packet_filter(NetworkEvent* events, size_t num_events) {
         event->action = 1; // PASS
     } else {
         event->action = 0; // DROP unknown protocols
+    }
+}
+
+// Simple packet filtering kernel with batch processing
+__global__ void simple_packet_filter(NetworkEvent* events, size_t num_events) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    // Batch processing: each thread processes multiple events
+    const int batch_size = 32;
+    int start_idx = tid * batch_size;
+    int end_idx = min(start_idx + batch_size, (int)num_events);
+    
+    // Process batch of events
+    for (int i = start_idx; i < end_idx; i++) {
+        simple_packet_logic(&events[i]);
     }
 }
 

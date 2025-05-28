@@ -110,10 +110,8 @@ processor.load_kernel_from_ptx(ptx_code, "packet_filter");
 std::vector<NetworkEvent> events = create_test_events(1000);
 auto result = processor.process_events(events);
 
-if (result == ProcessingResult::Success) {
-    auto stats = processor.get_performance_stats();
-    std::cout << "Processed " << stats.events_processed 
-              << " events at " << stats.events_per_second << " events/sec\n";
+if (result == cudaSuccess) {
+    std::cout << "Events processed successfully!" << std::endl;
 }
 ```
 
@@ -198,10 +196,13 @@ Performance varies by GPU and kernel complexity. Typical results:
 
 ### Error Codes
 The library uses simple CUDA error codes and standard exceptions for error handling:
-- **ProcessingResult enum**: Success, Error, InvalidInput, DeviceError, KernelError
-- **CUDA error codes**: Direct use of cudaError_t and CUresult
-- **std::runtime_error**: For general runtime errors
-- **std::invalid_argument**: For invalid input parameters
+- **cudaError_t return values**: All methods return standard CUDA error codes
+- **Error Types**:
+  - **cudaSuccess**: Operation completed successfully  
+  - **cudaErrorInvalidValue**: Invalid input parameters
+  - **cudaErrorMemoryAllocation**: CUDA device or memory errors
+  - **cudaErrorLaunchFailure**: Kernel loading or execution errors
+  - **cudaErrorUnknown**: General unexpected errors
 
 ### Error Categories
 - **ProcessingResult::Success**: Operation completed successfully
