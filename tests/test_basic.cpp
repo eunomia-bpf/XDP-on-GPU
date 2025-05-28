@@ -1,5 +1,6 @@
 #include "ebpf_gpu_processor.hpp"
 #include "test_utils.hpp"
+#include "test_kernel.h"
 #include <iostream>
 #include <cstdio>
 #include <cstdlib>
@@ -10,7 +11,7 @@
 using namespace std;
 using namespace ebpf_gpu;
 
-void print_event(const NetworkEvent& event, int index) {
+void print_event(const ebpf_gpu::NetworkEvent& event, int index) {
     cout << "Event " << index << ":" << endl;
     cout << "  Length: " << event.length << endl;
     cout << "  Src IP: 0x" << hex << event.src_ip << dec << endl;
@@ -24,7 +25,7 @@ void print_event(const NetworkEvent& event, int index) {
     cout << endl;
 }
 
-void create_sample_events(vector<NetworkEvent>& events) {
+void create_sample_events(vector<ebpf_gpu::NetworkEvent>& events) {
     srand(time(nullptr));
     
     for (size_t i = 0; i < events.size(); i++) {
@@ -68,10 +69,10 @@ int test_cpp_api() {
         }
         
         // Load PTX kernel
-        processor.load_kernel_from_ptx(ptx_code, "_Z20simple_packet_filterPN8ebpf_gpu12NetworkEventEm");
+        processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
         
         // Create sample events
-        vector<NetworkEvent> events(10);
+        vector<ebpf_gpu::NetworkEvent> events(10);
         create_sample_events(events);
         
         cout << "Events before processing:" << endl;
@@ -80,7 +81,7 @@ int test_cpp_api() {
         }
         
         // Process events using the new interface
-        size_t buffer_size = events.size() * sizeof(NetworkEvent);
+        size_t buffer_size = events.size() * sizeof(ebpf_gpu::NetworkEvent);
         ProcessingResult result = processor.process_events(events.data(), buffer_size, events.size());
         if (result != ProcessingResult::Success) {
             cout << "Failed to process events" << endl;
@@ -115,10 +116,10 @@ int test_single_event_interface() {
         }
         
         // Load PTX kernel
-        processor.load_kernel_from_ptx(ptx_code, "_Z20simple_packet_filterPN8ebpf_gpu12NetworkEventEm");
+        processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
         
         // Create a single event
-        NetworkEvent event;
+        ebpf_gpu::NetworkEvent event;
         event.data = nullptr;
         event.length = 128;
         event.timestamp = time(nullptr) * 1000000;
@@ -133,7 +134,7 @@ int test_single_event_interface() {
         print_event(event, 0);
         
         // Process single event
-        ProcessingResult result = processor.process_event(&event, sizeof(NetworkEvent));
+        ProcessingResult result = processor.process_event(&event, sizeof(ebpf_gpu::NetworkEvent));
         if (result != ProcessingResult::Success) {
             cout << "Failed to process single event" << endl;
             return -1;
@@ -165,12 +166,12 @@ int test_buffer_interface() {
         }
         
         // Load PTX kernel
-        processor.load_kernel_from_ptx(ptx_code, "_Z20simple_packet_filterPN8ebpf_gpu12NetworkEventEm");
+        processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
         
         // Create sample events in a buffer
         const size_t num_events = 5;
-        size_t buffer_size = num_events * sizeof(NetworkEvent);
-        vector<NetworkEvent> events(num_events);
+        size_t buffer_size = num_events * sizeof(ebpf_gpu::NetworkEvent);
+        vector<ebpf_gpu::NetworkEvent> events(num_events);
         create_sample_events(events);
         
         cout << "Buffer events before processing:" << endl;

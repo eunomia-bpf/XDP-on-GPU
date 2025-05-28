@@ -1,5 +1,6 @@
 #include "ebpf_gpu_processor.hpp"
 #include "test_utils.hpp"
+#include "test_kernel.h"
 #include <iostream>
 #include <vector>
 #include <cstdint>
@@ -41,7 +42,7 @@ void example_network_event_processing() {
             return;
         }
         
-        processor.load_kernel_from_ptx(ptx_code, "_Z20simple_packet_filterPN8ebpf_gpu12NetworkEventEm");
+        processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
         
         // Create some network events for testing
         std::vector<NetworkEvent> events(5);
@@ -90,7 +91,7 @@ void example_single_event_processing() {
             return;
         }
         
-        processor.load_kernel_from_ptx(ptx_code, "_Z20simple_packet_filterPN8ebpf_gpu12NetworkEventEm");
+        processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
         
         // Create a single network event
         NetworkEvent event;

@@ -38,7 +38,7 @@ add_custom_target(generate_ptx DEPENDS ${PTX_OUTPUT_FILE})
 
 # Test kernels
 add_library(test_kernels OBJECT
-    kernels/test_kernels.cu
+    cuda_kernels.cu
 )
 
 set_target_properties(test_kernels PROPERTIES

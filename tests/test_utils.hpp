@@ -4,6 +4,9 @@
 #include <cstdlib>
 #include <cstdint>
 
+// Put NetworkEvent in the ebpf_gpu namespace to match the expected kernel signature
+namespace ebpf_gpu {
+
 // NetworkEvent definition for testing purposes
 struct NetworkEvent {
     uint8_t* data = nullptr;
@@ -16,6 +19,8 @@ struct NetworkEvent {
     uint8_t protocol = 0;
     uint8_t action = 0;  // 0=drop, 1=pass, 2=redirect
 };
+
+} // namespace ebpf_gpu
 
 // Helper function to get PTX code - shared across all test files
 inline const char* get_test_ptx() {
