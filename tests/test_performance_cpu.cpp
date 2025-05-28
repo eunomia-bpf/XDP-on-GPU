@@ -71,14 +71,14 @@ TEST_CASE("Performance - CPU vs GPU Comparison", "[performance][comparison][benc
     const char* function_name = cpu::get_function_display_name(selected_kernel);
     
     // Setup GPU processor
-    EventProcessor processor;
-    ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, selected_kernel);
-    REQUIRE(load_result == ProcessingResult::Success);
     
     // Test with different event counts
-    const std::vector<size_t> event_counts = {100, 1000, 10000};
+    const std::vector<size_t> event_counts = {100, 1000, 10000, 100000, 1000000, 10000000};
     
     for (size_t event_count : event_counts) {
+        EventProcessor processor;
+        ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, selected_kernel);
+        REQUIRE(load_result == ProcessingResult::Success);
         std::vector<NetworkEvent> gpu_events(event_count);
         std::vector<NetworkEvent> cpu_events(event_count);
         size_t buffer_size = gpu_events.size() * sizeof(NetworkEvent);
@@ -88,6 +88,7 @@ TEST_CASE("Performance - CPU vs GPU Comparison", "[performance][comparison][benc
         
         // Warm up GPU
         reset_event_actions_cpu(gpu_events);
+        processor.register_host_buffer(gpu_events.data(), buffer_size);
         processor.process_events(gpu_events.data(), buffer_size, gpu_events.size());
         
         std::string gpu_test_name = "GPU " + std::string(function_name) + " - " + std::to_string(event_count) + " events";
@@ -101,8 +102,8 @@ TEST_CASE("Performance - CPU vs GPU Comparison", "[performance][comparison][benc
         };
         
         BENCHMARK_ADVANCED(cpu_test_name.c_str())(Catch::Benchmark::Chronometer meter) {
+            reset_event_actions_cpu(cpu_events);
             meter.measure([&] {
-                reset_event_actions_cpu(cpu_events);
                 selected_cpu_function(cpu_events.data(), cpu_events.size());
                 return cpu_events.size();
             });
@@ -182,8 +183,8 @@ TEST_CASE("Performance - Multiple Filter Comparison", "[performance][filters][be
         };
         
         BENCHMARK_ADVANCED(cpu_test_name.c_str())(Catch::Benchmark::Chronometer meter) {
+            reset_event_actions_cpu(cpu_events);
             meter.measure([&] {
-                reset_event_actions_cpu(cpu_events);
                 cpu_function(cpu_events.data(), cpu_events.size());
                 return cpu_events.size();
             });
