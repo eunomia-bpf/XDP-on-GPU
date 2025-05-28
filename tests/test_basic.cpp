@@ -90,7 +90,7 @@ int test_ptx_interface() {
     }
     
     // Load PTX kernel with correct mangled name
-    if (load_ptx_kernel(&handle, ptx_code, "_Z13simple_filterP15network_event_tm") != 0) {
+    if (load_ptx_kernel(&handle, ptx_code, "_Z20simple_packet_filterP15network_event_tm") != 0) {
         cout << "Failed to load PTX kernel: " << get_last_error() << endl;
         cleanup_processor(&handle);
         return -1;
@@ -145,7 +145,7 @@ int test_buffer_interface() {
     }
     
     // Load PTX kernel
-    if (load_ptx_kernel(&handle, ptx_code, "_Z13simple_filterP15network_event_tm") != 0) {
+    if (load_ptx_kernel(&handle, ptx_code, "_Z20simple_packet_filterP15network_event_tm") != 0) {
         cout << "Failed to load PTX kernel: " << get_last_error() << endl;
         cleanup_processor(&handle);
         return -1;
