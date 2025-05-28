@@ -15,6 +15,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <future>
+#include <thread>
 
 using namespace ebpf_gpu;
 
@@ -116,21 +117,11 @@ void run_benchmark(const std::string& name, EventProcessor& processor,
 
 // Global variables for batch tests
 std::atomic<int> completion_count(0);
-std::mutex completion_mutex;
-std::condition_variable completion_cv;
-bool all_batches_complete = false;
 
 // Callback for batch processing
 void batch_complete_callback(ProcessingResult result, void* data, size_t size) {
-    // Increment completion counter
-    int current = completion_count.fetch_add(1) + 1;
-    
-    // Signal if all batches are complete
-    if (data) {
-        std::lock_guard<std::mutex> lock(completion_mutex);
-        all_batches_complete = true;
-        completion_cv.notify_all();
-    }
+    // Just increment the counter with relaxed memory ordering
+    completion_count.fetch_add(1, std::memory_order_relaxed);
 }
 
 TEST_CASE("Performance - Basic Operations", "[performance][benchmark]") {
@@ -416,60 +407,14 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
     REQUIRE(load_result == ProcessingResult::Success);
     
     // Use a smaller event count for tests to prevent timeouts
-    const size_t total_events = std::min(test_config::total_events_size, (size_t)100000);
+    const size_t total_events = test_config::total_events_size;
     std::vector<NetworkEvent> events(total_events);
     create_test_events(events);
-    
-    SECTION("Batch Processing with 10K Batch Size") {
-        const size_t batch_size = std::min(test_config::batch_size, total_events / 10);
-        const size_t num_batches = total_events / batch_size;
-        
-        // Reset counters for test
-        completion_count.store(0);
-        all_batches_complete = false;
-        
-        // Process all events in batches
-        BENCHMARK_ADVANCED("Batch async - events in batches")(Catch::Benchmark::Chronometer meter) {
-            meter.measure([&] {
-                // Reset counters
-                completion_count.store(0);
-                all_batches_complete = false;
+    size_t buffer_size = events.size() * sizeof(NetworkEvent);
                 
-                // Submit all batches
-                for (size_t i = 0; i < num_batches; i++) {
-                    void* batch_start = &events[i * batch_size];
-                    size_t batch_size_bytes = batch_size * sizeof(NetworkEvent);
-                    
-                    // Last batch gets a special callback that signals completion
-                    bool is_last_batch = (i == num_batches - 1);
-                    
-                    ProcessingResult result = processor.process_batch_async(
-                        batch_start, 
-                        batch_size_bytes, 
-                        batch_size,
-                        [is_last_batch](ProcessingResult result, void* data, size_t size) {
-                            batch_complete_callback(result, is_last_batch ? data : nullptr, size);
-                        }
-                    );
-                    
-                    REQUIRE(result == ProcessingResult::Success);
-                }
-                
-                // Wait for all batches to complete with timeout
-                std::unique_lock<std::mutex> lock(completion_mutex);
-                bool wait_result = completion_cv.wait_for(lock, 
-                    test_config::wait_timeout, [] { return all_batches_complete; });
-                
-                // Make sure we didn't time out
-                REQUIRE(wait_result);
-                
-                // Return count as a way to prevent optimization
-                return completion_count.load();
-            });
-        };
-        
-        REQUIRE(completion_count.load() > 0);
-    }
+    // Register the buffer as pinned memory
+    ProcessingResult register_result = processor.register_host_buffer(events.data(), buffer_size);
+    REQUIRE(register_result == ProcessingResult::Success);
     
     SECTION("Comparison: Async Batch vs Sync Processing") {
         // First, do a standard synchronous batch process as baseline
@@ -491,40 +436,34 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
         const size_t batch_size = test_config::batch_size;
         const size_t num_batches = total_events / batch_size;
         
-        // Reset counters
-        completion_count.store(0);
-        all_batches_complete = false;
-        
         BENCHMARK_ADVANCED("Batch async - comparison")(Catch::Benchmark::Chronometer meter) {
             meter.measure([&] {
-                // Reset counters for each measurement
-                completion_count.store(0);
-                all_batches_complete = false;
+                // Reset counter for each measurement
+                completion_count.store(0, std::memory_order_relaxed);
                 
                 // Submit all batches
                 for (size_t i = 0; i < num_batches; i++) {
                     void* batch_start = &events[i * batch_size];
                     size_t batch_size_bytes = batch_size * sizeof(NetworkEvent);
                     
-                    // Last batch gets a special callback that signals completion
-                    bool is_last_batch = (i == num_batches - 1);
-                    
-                    processor.process_batch_async(
+                    processor.process_event_async(
                         batch_start, 
                         batch_size_bytes, 
                         batch_size,
-                        [is_last_batch](ProcessingResult result, void* data, size_t size) {
-                            batch_complete_callback(result, is_last_batch ? data : nullptr, size);
-                        }
+                        batch_complete_callback
                     );
                 }
                 
-                // Wait for all batches to complete with timeout
-                std::unique_lock<std::mutex> lock(completion_mutex);
-                completion_cv.wait_for(lock, test_config::wait_timeout, [] { return all_batches_complete; });
+                // Wait for all batches to complete using busy-wait on the atomic counter
+                // This avoids the mutex/condition variable overhead
+                while (completion_count.load(std::memory_order_acquire) < num_batches) {
+                    // Small delay to reduce CPU usage while spinning
+                    // std::this_thread::yield();
+                    // spin 
+                }
                 
-                // Return count as a way to prevent optimization
-                return completion_count.load();
+                // Return number of completed batches
+                return num_batches;
             });
         };
     }

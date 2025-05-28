@@ -32,7 +32,7 @@ public:
     ProcessingResult process_events(void* events_buffer, size_t buffer_size, size_t event_count);
     
     // Async batch processing
-    ProcessingResult process_batch_async(void* events_buffer, size_t buffer_size, size_t event_count,
+    ProcessingResult process_event_async(void* events_buffer, size_t buffer_size, size_t event_count,
                                         EventProcessingCallback callback);
 
     GpuDeviceInfo get_device_info() const;

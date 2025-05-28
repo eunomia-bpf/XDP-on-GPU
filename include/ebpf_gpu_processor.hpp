@@ -90,7 +90,7 @@ public:
      * @return ProcessingResult::Success if the batch was successfully queued for processing,
      *         or an error code if the batch could not be queued
      */
-    ProcessingResult process_batch_async(void* events_buffer, size_t buffer_size, size_t event_count,
+    ProcessingResult process_event_async(void* events_buffer, size_t buffer_size, size_t event_count,
                                         EventProcessingCallback callback);
     
     // Utility functions for pinned memory management

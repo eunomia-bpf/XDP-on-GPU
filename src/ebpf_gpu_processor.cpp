@@ -527,7 +527,7 @@ ProcessingResult EventProcessor::Impl::process_batch_internal(const EventBatch& 
     return ProcessingResult::Success;
 }
 
-ProcessingResult EventProcessor::Impl::process_batch_async(void* events_buffer, size_t buffer_size, size_t event_count,
+ProcessingResult EventProcessor::Impl::process_event_async(void* events_buffer, size_t buffer_size, size_t event_count,
                                                      EventProcessingCallback callback) {
     if (!is_ready()) {
         return ProcessingResult::KernelError;
@@ -569,9 +569,9 @@ ProcessingResult EventProcessor::Impl::process_batch_async(void* events_buffer, 
 }
 
 // EventProcessor public interface implementation
-ProcessingResult EventProcessor::process_batch_async(void* events_buffer, size_t buffer_size, size_t event_count,
+ProcessingResult EventProcessor::process_event_async(void* events_buffer, size_t buffer_size, size_t event_count,
                                                EventProcessingCallback callback) {
-    return pimpl_->process_batch_async(events_buffer, buffer_size, event_count, callback);
+    return pimpl_->process_event_async(events_buffer, buffer_size, event_count, callback);
 }
 
 // Utility functions for pinned memory management
