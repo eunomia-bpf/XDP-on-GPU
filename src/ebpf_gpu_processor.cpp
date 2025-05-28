@@ -2,6 +2,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <stdexcept>
+#include <cstring>
 #include "gpu_device_manager.hpp"
 #include "kernel_loader.hpp"
 
@@ -205,8 +206,10 @@ ProcessingResult EventProcessor::Impl::process_event(void* event_data, size_t ev
         return ProcessingResult::DeviceError;
     }
     
-    // Copy event to device
-    cudaError_t result = cudaMemcpy(device_buffer_, event_data, event_size, cudaMemcpyHostToDevice);
+    cudaError_t result;
+    
+    // Direct copy from pageable memory to device
+    result = cudaMemcpy(device_buffer_, event_data, event_size, cudaMemcpyHostToDevice);
     if (result != cudaSuccess) {
         return ProcessingResult::DeviceError;
     }
@@ -217,7 +220,7 @@ ProcessingResult EventProcessor::Impl::process_event(void* event_data, size_t ev
         return launch_result;
     }
     
-    // Copy result back
+    // Direct copy from device to user buffer
     result = cudaMemcpy(event_data, device_buffer_, event_size, cudaMemcpyDeviceToHost);
     if (result != cudaSuccess) {
         return ProcessingResult::DeviceError;
@@ -251,8 +254,10 @@ ProcessingResult EventProcessor::Impl::process_events(void* events_buffer, size_
         return ProcessingResult::DeviceError;
     }
     
-    // Copy buffer to device
-    cudaError_t result = cudaMemcpy(device_buffer_, events_buffer, buffer_size, cudaMemcpyHostToDevice);
+    cudaError_t result;
+    
+    // Direct copy from pageable memory to device
+    result = cudaMemcpy(device_buffer_, events_buffer, buffer_size, cudaMemcpyHostToDevice);
     if (result != cudaSuccess) {
         return ProcessingResult::DeviceError;
     }
@@ -263,7 +268,7 @@ ProcessingResult EventProcessor::Impl::process_events(void* events_buffer, size_
         return launch_result;
     }
     
-    // Copy results back
+    // Direct copy from device to user buffer
     result = cudaMemcpy(events_buffer, device_buffer_, buffer_size, cudaMemcpyDeviceToHost);
     if (result != cudaSuccess) {
         return ProcessingResult::DeviceError;
@@ -407,6 +412,46 @@ size_t EventProcessor::get_available_memory() const {
 
 bool EventProcessor::is_ready() const {
     return pimpl_->is_ready();
+}
+
+// Static utility functions for pinned memory management
+void* EventProcessor::allocate_pinned_buffer(size_t size) {
+    void* pinned_ptr = nullptr;
+    cudaError_t result = cudaMallocHost(&pinned_ptr, size);
+    if (result != cudaSuccess) {
+        return nullptr;
+    }
+    return pinned_ptr;
+}
+
+void EventProcessor::free_pinned_buffer(void* pinned_ptr) {
+    if (pinned_ptr) {
+        cudaFreeHost(pinned_ptr);
+    }
+}
+
+// Static utility functions for registering/unregistering existing host memory
+ProcessingResult EventProcessor::register_host_buffer(void* ptr, size_t size, unsigned int flags) {
+    if (!ptr || size == 0) {
+        return ProcessingResult::InvalidInput;
+    }
+    cudaError_t result = cudaHostRegister(ptr, size, flags);
+    if (result != cudaSuccess) {
+        // Consider mapping CUDA errors to ProcessingResult more granularly if needed
+        return ProcessingResult::DeviceError; 
+    }
+    return ProcessingResult::Success;
+}
+
+ProcessingResult EventProcessor::unregister_host_buffer(void* ptr) {
+    if (!ptr) {
+        return ProcessingResult::InvalidInput;
+    }
+    cudaError_t result = cudaHostUnregister(ptr);
+    if (result != cudaSuccess) {
+        return ProcessingResult::DeviceError;
+    }
+    return ProcessingResult::Success;
 }
 
 // Utility functions

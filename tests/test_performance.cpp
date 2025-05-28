@@ -119,6 +119,10 @@ TEST_CASE("Performance - Scaling Test", "[performance][benchmark]") {
         create_test_events(events);
         size_t buffer_size = events.size() * sizeof(NetworkEvent);
         
+        // register the events buffer 
+        ProcessingResult register_result = processor.register_host_buffer(events.data(), buffer_size);
+        REQUIRE(register_result == ProcessingResult::Success);
+
         // Warm up
         reset_event_actions(events);
         processor.process_events(events.data(), buffer_size, events.size());
@@ -135,6 +139,10 @@ TEST_CASE("Performance - Scaling Test", "[performance][benchmark]") {
         ProcessingResult final_result = processor.process_events(events.data(), buffer_size, events.size());
         REQUIRE(final_result == ProcessingResult::Success);
         REQUIRE(validate_results(events));
+
+        // unregister the events buffer
+        ProcessingResult unregister_result = processor.unregister_host_buffer(events.data());
+        REQUIRE(unregister_result == ProcessingResult::Success);
     }
     
     // Test 10K events

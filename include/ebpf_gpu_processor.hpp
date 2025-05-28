@@ -67,6 +67,14 @@ public:
     // Multiple events processing (zero-copy)
     ProcessingResult process_events(void* events_buffer, size_t buffer_size, size_t event_count);
 
+    // Utility functions for pinned memory management
+    static void* allocate_pinned_buffer(size_t size);
+    static void free_pinned_buffer(void* pinned_ptr);
+
+    // Utility functions for registering/unregistering existing host memory
+    static ProcessingResult register_host_buffer(void* ptr, size_t size, unsigned int flags = 0 /* cudaHostRegisterDefault */);
+    static ProcessingResult unregister_host_buffer(void* ptr);
+
     // Device information
     GpuDeviceInfo get_device_info() const;
     size_t get_available_memory() const;
