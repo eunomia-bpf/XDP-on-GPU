@@ -54,7 +54,7 @@ include_directories(include)
 
 # Library source files
 set(LIB_SOURCES
-    src/cuda_event_processor.cpp
+    src/ebpf_gpu_processor.cpp
     src/gpu_device_manager.cpp
     src/kernel_loader.cpp
     src/error_handling.cpp

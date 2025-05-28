@@ -97,16 +97,7 @@ target_compile_definitions(test_integration PRIVATE
     CUDA_ARCH_SM=${PTX_ARCH}
 )
 
-# Legacy C API tests
-add_executable(test_c_api
-    test_c_api.cpp
-    $<TARGET_OBJECTS:test_kernels>
-)
-
-target_link_libraries(test_c_api 
-    ebpf_gpu_processor
-    Catch2::Catch2WithMain
-)
+# Legacy C API tests removed - using modern C++ API only
 
 # Register tests with CTest
 include(CTest)
@@ -118,5 +109,4 @@ if(TARGET Catch2::Catch2)
     catch_discover_tests(test_basic)
     catch_discover_tests(test_performance)
     catch_discover_tests(test_integration)
-    catch_discover_tests(test_c_api)
 endif() 

@@ -1,15 +1,17 @@
-#include "cuda_event_processor.h"
+#include "ebpf_gpu_processor.hpp"
 #include <cuda_runtime.h>
 
+using namespace ebpf_gpu;
+
 // Simple packet filtering kernel
-__global__ void simple_packet_filter(network_event_t *events, size_t num_events) {
+__global__ void simple_packet_filter(NetworkEvent *events, size_t num_events) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     
     if (idx >= num_events) {
         return;
     }
     
-    network_event_t *event = &events[idx];
+    NetworkEvent *event = &events[idx];
     
     // Simple filtering logic - drop packets from specific IP
     if (event->src_ip == 0xC0A80001) { // 192.168.0.1
@@ -24,14 +26,14 @@ __global__ void simple_packet_filter(network_event_t *events, size_t num_events)
 }
 
 // Simple filter for PTX testing
-__global__ void simple_filter(network_event_t *events, size_t num_events) {
+__global__ void simple_filter(NetworkEvent *events, size_t num_events) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     
     if (idx >= num_events) {
         return;
     }
     
-    network_event_t *event = &events[idx];
+    NetworkEvent *event = &events[idx];
     
     // Simple logic: drop packets from 192.168.0.1, pass others
     if (event->src_ip == 0xC0A80001) { // 192.168.0.1

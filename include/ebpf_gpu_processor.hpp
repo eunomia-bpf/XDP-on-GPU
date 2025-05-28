@@ -37,13 +37,15 @@ enum class ProcessingResult {
 class EventProcessor {
 public:
     struct Config {
-        int device_id = -1;  // -1 for auto-select
-        size_t buffer_size = 1024 * 1024;  // 1MB default
-        bool enable_profiling = false;
-        bool use_unified_memory = false;
+        int device_id;  // -1 for auto-select
+        size_t buffer_size;  // 1MB default
+        bool enable_profiling;
+        bool use_unified_memory;
+        
+        Config() : device_id(-1), buffer_size(1024 * 1024), enable_profiling(false), use_unified_memory(false) {}
     };
 
-    explicit EventProcessor(const Config& config = {});
+    explicit EventProcessor(const Config& config = Config{});
     ~EventProcessor();
 
     // Non-copyable, movable
@@ -95,9 +97,4 @@ std::vector<GpuDeviceInfo> get_available_devices();
 int select_best_device(size_t min_memory = 0);
 bool validate_ptx_code(const std::string& ptx_code);
 
-} // namespace ebpf_gpu
-
-// C API for backward compatibility
-extern "C" {
-    #include "cuda_event_processor.h"
-} 
+} // namespace ebpf_gpu 
