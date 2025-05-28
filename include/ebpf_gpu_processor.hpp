@@ -72,7 +72,88 @@ public:
     static void free_pinned_buffer(void* pinned_ptr);
 
     // Utility functions for registering/unregistering existing host memory
+    
+    /**
+     * @brief Register existing host memory as pinned (page-locked) for faster GPU transfers
+     * 
+     * BACKGROUND:
+     * Normal host memory (allocated with malloc, new, or std::vector) is "pageable", meaning
+     * the OS can swap it to disk and change its physical address. When transferring pageable
+     * memory to/from GPU, CUDA must:
+     * 1. Allocate a temporary pinned buffer
+     * 2. Copy: pageable → pinned (CPU memcpy)
+     * 3. Transfer: pinned → GPU (fast DMA)
+     * This results in double copying and reduced performance.
+     * 
+     * MECHANISM:
+     * cudaHostRegister() makes existing memory "pinned" (page-locked):
+     * - OS guarantees the memory won't be swapped to disk
+     * - Physical address remains constant
+     * - DMA hardware can access it directly
+     * - Eliminates the need for intermediate staging buffers
+     * 
+     * PERFORMANCE BENEFITS:
+     * - Up to 2-6x faster memory transfers (depends on system)
+     * - Higher PCIe bandwidth utilization
+     * - Reduced memory copy overhead
+     * - Lower transfer latency
+     * 
+     * USAGE PATTERN:
+     * ```cpp
+     * std::vector<MyData> data(1000);
+     * // ... fill data ...
+     * 
+     * // Pin the existing vector's memory
+     * EventProcessor::register_host_buffer(data.data(), data.size() * sizeof(MyData));
+     * 
+     * // Now transfers to this buffer are fast
+     * processor.process_events(data.data(), data.size() * sizeof(MyData), data.size());
+     * 
+     * // IMPORTANT: Unpin before vector is destroyed or reallocated
+     * EventProcessor::unregister_host_buffer(data.data());
+     * ```
+     * 
+     * IMPORTANT CONSIDERATIONS:
+     * - Memory must remain at the same address while registered
+     * - Don't resize/reallocate containers (std::vector::push_back, etc.) while registered
+     * - Always call unregister_host_buffer() before freeing the memory
+     * - Registration has overhead - beneficial for buffers used multiple times
+     * - System has limited pinned memory - don't pin everything simultaneously
+     * 
+     * @param ptr Pointer to the start of the memory region to pin
+     * @param size Size of the memory region in bytes
+     * @param flags CUDA host registration flags:
+     *              - 0 (default): cudaHostRegisterDefault - standard pinning
+     *              - cudaHostRegisterPortable: usable across multiple CUDA contexts
+     *              - cudaHostRegisterMapped: enables zero-copy GPU access on supported hardware
+     *              - cudaHostRegisterIoMemory: for GPUDirect RDMA applications
+     * 
+     * @return ProcessingResult::Success on successful registration,
+     *         ProcessingResult::InvalidInput for null pointer or zero size,
+     *         ProcessingResult::DeviceError if CUDA registration fails
+     * 
+     * @note This function wraps cudaHostRegister(). See CUDA documentation for hardware
+     *       requirements and limitations.
+     */
     static ProcessingResult register_host_buffer(void* ptr, size_t size, unsigned int flags = 0 /* cudaHostRegisterDefault */);
+    
+    /**
+     * @brief Unregister previously pinned host memory
+     * 
+     * Releases the pinned status of memory previously registered with register_host_buffer().
+     * This MUST be called before the memory is freed or goes out of scope to avoid resource leaks.
+     * 
+     * After unregistering, the memory becomes regular pageable memory again, and transfers
+     * to/from GPU will use the slower staged copy mechanism.
+     * 
+     * @param ptr Pointer to the memory region to unpin (same pointer used in register_host_buffer)
+     * 
+     * @return ProcessingResult::Success on successful unregistration,
+     *         ProcessingResult::InvalidInput for null pointer,
+     *         ProcessingResult::DeviceError if CUDA unregistration fails
+     * 
+     * @note This function wraps cudaHostUnregister()
+     */
     static ProcessingResult unregister_host_buffer(void* ptr);
 
     // Device information

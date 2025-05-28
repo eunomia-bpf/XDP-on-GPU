@@ -384,3 +384,85 @@ TEST_CASE("Performance - Memory Transfer vs Compute", "[performance][benchmark]"
         };
     }
 }
+
+TEST_CASE("Performance - Pinned vs Pageable Memory", "[performance][benchmark]") {
+    auto devices = get_available_devices();
+    if (devices.empty()) {
+        SKIP("No CUDA devices available for performance testing");
+    }
+    
+    const char* ptx_code = get_test_ptx();
+    if (!ptx_code) {
+        SKIP("PTX file not found for performance testing");
+    }
+    
+    EventProcessor processor;
+    ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    REQUIRE(load_result == ProcessingResult::Success);
+    
+    // Test different sizes to see scaling behavior
+    std::vector<size_t> test_sizes = {1000, 10000, 100000, 1000000};
+    
+    for (size_t event_count : test_sizes) {
+        SECTION("Events: " + std::to_string(event_count)) {
+            // Test with pageable memory (std::vector)
+            {
+                std::vector<NetworkEvent> events(event_count);
+                create_test_events(events);
+                size_t buffer_size = events.size() * sizeof(NetworkEvent);
+                
+                // Warm up
+                reset_event_actions(events);
+                processor.process_events(events.data(), buffer_size, events.size());
+                
+                std::string bench_name = "Pageable memory - " + std::to_string(event_count) + " events";
+                BENCHMARK_ADVANCED(bench_name.c_str())(Catch::Benchmark::Chronometer meter) {
+                    reset_event_actions(events);
+                    meter.measure([&] {
+                        return processor.process_events(events.data(), buffer_size, events.size());
+                    });
+                };
+                
+                // Validate after benchmark
+                reset_event_actions(events);
+                ProcessingResult final_result = processor.process_events(events.data(), buffer_size, events.size());
+                REQUIRE(final_result == ProcessingResult::Success);
+                REQUIRE(validate_results(events));
+            }
+            
+            // Test with registered pinned memory (same std::vector but registered)
+            {
+                std::vector<NetworkEvent> events(event_count);
+                create_test_events(events);
+                size_t buffer_size = events.size() * sizeof(NetworkEvent);
+                
+                // Register the buffer as pinned memory
+                ProcessingResult register_result = processor.register_host_buffer(events.data(), buffer_size);
+                REQUIRE(register_result == ProcessingResult::Success);
+                
+                // Warm up
+                reset_event_actions(events);
+                processor.process_events(events.data(), buffer_size, events.size());
+                
+                std::string bench_name = "Registered pinned memory - " + std::to_string(event_count) + " events";
+                BENCHMARK_ADVANCED(bench_name.c_str())(Catch::Benchmark::Chronometer meter) {
+                    reset_event_actions(events);
+                    meter.measure([&] {
+                        return processor.process_events(events.data(), buffer_size, events.size());
+                    });
+                };
+                
+                // Validate after benchmark
+                reset_event_actions(events);
+                ProcessingResult final_result = processor.process_events(events.data(), buffer_size, events.size());
+                REQUIRE(final_result == ProcessingResult::Success);
+                REQUIRE(validate_results(events));
+                
+                // Unregister the buffer
+                ProcessingResult unregister_result = processor.unregister_host_buffer(events.data());
+                REQUIRE(unregister_result == ProcessingResult::Success);
+            }
+        }
+    }
+}
+
