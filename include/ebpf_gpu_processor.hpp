@@ -1,6 +1,7 @@
 #pragma once
 
-#include "error_handling.hpp"
+#include <cuda.h>
+#include <cuda_runtime.h>
 #include "gpu_device_manager.hpp"
 #include "kernel_loader.hpp"
 #include <memory>

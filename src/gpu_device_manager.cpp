@@ -1,5 +1,4 @@
 #include "gpu_device_manager.hpp"
-#include "error_handling.hpp"
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <stdexcept>
@@ -14,7 +13,10 @@ void GpuDeviceManager::initialize_devices() {
     if (initialized_) return;
     
     int device_count = 0;
-    check_cuda_runtime(cudaGetDeviceCount(&device_count), "cudaGetDeviceCount");
+    cudaError_t result = cudaGetDeviceCount(&device_count);
+    if (result != cudaSuccess) {
+        throw std::runtime_error("Failed to get CUDA device count");
+    }
     
     devices_.clear();
     devices_.reserve(device_count);
@@ -22,7 +24,7 @@ void GpuDeviceManager::initialize_devices() {
     for (int i = 0; i < device_count; ++i) {
         try {
             devices_.push_back(query_device_info(i));
-        } catch (const CudaException& e) {
+        } catch (const std::exception& e) {
             // Skip devices that can't be queried
             continue;
         }
@@ -114,7 +116,10 @@ size_t GpuDeviceManager::get_available_memory(int device_id) const {
     // Get current memory info (may have changed since initialization)
     size_t free_mem, total_mem;
     cudaSetDevice(device_id);
-    check_cuda_runtime(cudaMemGetInfo(&free_mem, &total_mem), "cudaMemGetInfo");
+    cudaError_t result = cudaMemGetInfo(&free_mem, &total_mem);
+    if (result != cudaSuccess) {
+        return 0;
+    }
     
     return free_mem;
 }
@@ -131,7 +136,10 @@ GpuDeviceInfo GpuDeviceManager::query_device_info(int device_id) const {
     info.device_id = device_id;
     
     cudaDeviceProp prop;
-    check_cuda_runtime(cudaGetDeviceProperties(&prop, device_id), "cudaGetDeviceProperties");
+    cudaError_t result = cudaGetDeviceProperties(&prop, device_id);
+    if (result != cudaSuccess) {
+        throw std::runtime_error("Failed to get device properties");
+    }
     
     info.name = prop.name;
     info.total_memory = prop.totalGlobalMem;
@@ -145,7 +153,10 @@ GpuDeviceInfo GpuDeviceManager::query_device_info(int device_id) const {
     // Get current memory info
     size_t free_mem, total_mem;
     cudaSetDevice(device_id);
-    check_cuda_runtime(cudaMemGetInfo(&free_mem, &total_mem), "cudaMemGetInfo");
+    result = cudaMemGetInfo(&free_mem, &total_mem);
+    if (result != cudaSuccess) {
+        throw std::runtime_error("Failed to get memory info");
+    }
     info.free_memory = free_mem;
     
     return info;

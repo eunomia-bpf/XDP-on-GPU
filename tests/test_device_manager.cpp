@@ -1,6 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
 #include "gpu_device_manager.hpp"
-#include "error_handling.hpp"
 
 using namespace ebpf_gpu;
 

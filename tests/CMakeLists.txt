@@ -51,7 +51,6 @@ add_executable(test_basic
     test_basic.cpp
     test_device_manager.cpp
     test_kernel_loader.cpp
-    test_error_handling.cpp
     $<TARGET_OBJECTS:test_kernels>
 )
 
@@ -67,7 +66,7 @@ target_compile_definitions(test_basic PRIVATE
     CUDA_ARCH_SM=${PTX_ARCH}
 )
 
-# Performance tests
+# Performance tests (GPU only)
 add_executable(test_performance
     test_performance.cpp
     $<TARGET_OBJECTS:test_kernels>
@@ -78,7 +77,26 @@ target_link_libraries(test_performance
     Catch2::Catch2WithMain
 )
 
+add_dependencies(test_performance generate_ptx)
 target_compile_definitions(test_performance PRIVATE 
+    PTX_FILE_PATH="${PTX_OUTPUT_FILE}"
+    CUDA_ARCH_SM=${PTX_ARCH}
+)
+
+# CPU Performance tests (benchmarks)
+add_executable(test_performance_cpu
+    test_performance_cpu.cpp
+    $<TARGET_OBJECTS:test_kernels>
+)
+
+target_link_libraries(test_performance_cpu 
+    ebpf_gpu_processor
+    Catch2::Catch2WithMain
+)
+
+add_dependencies(test_performance_cpu generate_ptx)
+target_compile_definitions(test_performance_cpu PRIVATE 
+    PTX_FILE_PATH="${PTX_OUTPUT_FILE}"
     CUDA_ARCH_SM=${PTX_ARCH}
 )
 
@@ -93,7 +111,9 @@ target_link_libraries(test_integration
     Catch2::Catch2WithMain
 )
 
+add_dependencies(test_integration generate_ptx)
 target_compile_definitions(test_integration PRIVATE 
+    PTX_FILE_PATH="${PTX_OUTPUT_FILE}"
     CUDA_ARCH_SM=${PTX_ARCH}
 )
 
@@ -106,7 +126,25 @@ include(CTest)
 if(TARGET Catch2::Catch2)
     list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
     include(Catch)
+    
+    # Regular tests (exclude benchmark tests)
     catch_discover_tests(test_basic)
-    catch_discover_tests(test_performance)
     catch_discover_tests(test_integration)
+    
+    # Performance tests without benchmarks (exclude [benchmark] tag)
+    catch_discover_tests(test_performance 
+        TEST_SPEC "~[benchmark]"
+    )
+    
+    # Benchmark tests (separate target, not included in regular test runs)
+    catch_discover_tests(test_performance_cpu 
+        TEST_PREFIX "bench_"
+        TEST_SPEC "[benchmark]"
+    )
+    
+    # Also add GPU benchmarks
+    catch_discover_tests(test_performance 
+        TEST_PREFIX "bench_"
+        TEST_SPEC "[benchmark]"
+    )
 endif() 

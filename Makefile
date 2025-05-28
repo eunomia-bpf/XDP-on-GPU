@@ -6,7 +6,7 @@ BUILD_TESTS ?= ON
 BUILD_DIR ?= build
 JOBS ?= $(shell nproc)
 
-.PHONY: all configure build test clean install help
+.PHONY: all configure build test bench clean install help
 
 # Default target
 all: build
@@ -20,9 +20,14 @@ configure:
 build: configure
 	cd $(BUILD_DIR) && make -j$(JOBS)
 
-# Run tests
+# Run tests (excluding benchmarks)
 test: build
-	cd $(BUILD_DIR) && ctest --output-on-failure
+	cd $(BUILD_DIR) && ctest --output-on-failure -E "bench_"
+
+# Run benchmark tests
+bench: build
+	./build/tests/test_performance
+	./build/tests/test_performance_cpu
 
 # Install
 install: build
@@ -41,7 +46,8 @@ help:
 	@echo "  all          - Build everything (default)"
 	@echo "  configure    - Configure with CMake"
 	@echo "  build        - Build the project"
-	@echo "  test         - Run tests"
+	@echo "  test         - Run tests (excluding benchmarks)"
+	@echo "  bench        - Run benchmark tests"
 	@echo "  clean        - Clean build directory"
 	@echo "  install      - Install the library"
 	@echo "  help         - Show this help"

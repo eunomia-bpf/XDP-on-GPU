@@ -1,5 +1,5 @@
 #include "kernel_loader.hpp"
-#include "error_handling.hpp"
+#include <cuda.h>
 #include <fstream>
 #include <sstream>
 #include <cstdlib>
@@ -9,11 +9,17 @@ namespace ebpf_gpu {
 
 // CudaModule implementation
 CudaModule::CudaModule(const std::string& ptx_code) : module_(nullptr) {
-    check_cuda_driver(cuModuleLoadData(&module_, ptx_code.c_str()), "cuModuleLoadData");
+    CUresult result = cuModuleLoadData(&module_, ptx_code.c_str());
+    if (result != CUDA_SUCCESS) {
+        throw std::runtime_error("Failed to load PTX module");
+    }
 }
 
 CudaModule::CudaModule(const std::vector<char>& ptx_data) : module_(nullptr) {
-    check_cuda_driver(cuModuleLoadData(&module_, ptx_data.data()), "cuModuleLoadData");
+    CUresult result = cuModuleLoadData(&module_, ptx_data.data());
+    if (result != CUDA_SUCCESS) {
+        throw std::runtime_error("Failed to load PTX module from data");
+    }
 }
 
 CudaModule::~CudaModule() {
@@ -43,8 +49,10 @@ CUfunction CudaModule::get_function(const std::string& function_name) const {
     }
     
     CUfunction function;
-    check_cuda_driver(cuModuleGetFunction(&function, module_, function_name.c_str()),
-                     "cuModuleGetFunction for " + function_name);
+    CUresult result = cuModuleGetFunction(&function, module_, function_name.c_str());
+    if (result != CUDA_SUCCESS) {
+        throw std::runtime_error("Failed to get function: " + function_name);
+    }
     return function;
 }
 

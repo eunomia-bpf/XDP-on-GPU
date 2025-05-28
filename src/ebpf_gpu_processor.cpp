@@ -1,5 +1,7 @@
 #include "ebpf_gpu_processor.hpp"
-#include "error_handling.hpp"
+#include <cuda.h>
+#include <cuda_runtime.h>
+#include <stdexcept>
 #include "gpu_device_manager.hpp"
 #include "kernel_loader.hpp"
 
@@ -32,40 +34,68 @@ public:
 
 private:
     Config config_;
-    std::unique_ptr<CudaContext> context_;
-    std::unique_ptr<DeviceMemory> device_buffer_;
+    CUcontext context_;
+    void* device_buffer_;
+    size_t buffer_size_;
     std::unique_ptr<CudaModule> module_;
     CUfunction kernel_function_;
     GpuDeviceManager device_manager_;
+    int device_id_;
     
     void initialize_device();
-    void ensure_buffer_size(size_t required_size);
+    ProcessingResult ensure_buffer_size(size_t required_size);
     ProcessingResult launch_kernel(void* device_data, size_t event_count);
 };
 
 EventProcessor::Impl::Impl(const Config& config) 
-    : config_(config), kernel_function_(nullptr) {
+    : config_(config), context_(nullptr), device_buffer_(nullptr), buffer_size_(0), kernel_function_(nullptr), device_id_(-1) {
     initialize_device();
 }
 
-EventProcessor::Impl::~Impl() = default;
+EventProcessor::Impl::~Impl() {
+    if (device_buffer_) {
+        cudaFree(device_buffer_);
+    }
+    if (context_) {
+        cuCtxDestroy(context_);
+    }
+}
 
 void EventProcessor::Impl::initialize_device() {
-    int device_id = config_.device_id;
+    device_id_ = config_.device_id;
     
-    if (device_id < 0) {
-        device_id = device_manager_.select_best_device();
+    if (device_id_ < 0) {
+        device_id_ = device_manager_.select_best_device();
     }
     
-    if (!device_manager_.is_device_suitable(device_id, config_.buffer_size)) {
+    if (!device_manager_.is_device_suitable(device_id_, config_.buffer_size)) {
         throw std::runtime_error("Selected device is not suitable for processing");
     }
     
-    // Create CUDA context
-    context_ = std::make_unique<CudaContext>(device_id);
+    // Initialize CUDA driver
+    CUresult result = cuInit(0);
+    if (result != CUDA_SUCCESS) {
+        throw std::runtime_error("Failed to initialize CUDA driver");
+    }
+    
+    // Get device and create context
+    CUdevice device;
+    result = cuDeviceGet(&device, device_id_);
+    if (result != CUDA_SUCCESS) {
+        throw std::runtime_error("Failed to get CUDA device");
+    }
+    
+    result = cuCtxCreate(&context_, 0, device);
+    if (result != CUDA_SUCCESS) {
+        throw std::runtime_error("Failed to create CUDA context");
+    }
     
     // Allocate device buffer
-    device_buffer_ = std::make_unique<DeviceMemory>(config_.buffer_size);
+    cudaError_t cuda_result = cudaMalloc(&device_buffer_, config_.buffer_size);
+    if (cuda_result != cudaSuccess) {
+        throw std::runtime_error("Failed to allocate device memory");
+    }
+    buffer_size_ = config_.buffer_size;
 }
 
 void EventProcessor::Impl::load_kernel_from_ptx(const std::string& ptx_code, const std::string& function_name) {
@@ -97,29 +127,29 @@ ProcessingResult EventProcessor::Impl::process_event(void* event_data, size_t ev
         return ProcessingResult::InvalidInput;
     }
     
-    try {
-        ensure_buffer_size(event_size);
-        
-        // Copy event to device
-        device_buffer_->copy_from_host(event_data, event_size);
-        
-        // Launch kernel for single event
-        ProcessingResult result = launch_kernel(device_buffer_->get(), 1);
-        
-        if (result != ProcessingResult::Success) {
-            return result;
-        }
-        
-        // Copy result back
-        device_buffer_->copy_to_host(event_data, event_size);
-        
-        return ProcessingResult::Success;
-        
-    } catch (const CudaException&) {
+    if (ensure_buffer_size(event_size) != ProcessingResult::Success) {
         return ProcessingResult::DeviceError;
-    } catch (const std::exception&) {
-        return ProcessingResult::Error;
     }
+    
+    // Copy event to device
+    cudaError_t result = cudaMemcpy(device_buffer_, event_data, event_size, cudaMemcpyHostToDevice);
+    if (result != cudaSuccess) {
+        return ProcessingResult::DeviceError;
+    }
+    
+    // Launch kernel for single event
+    ProcessingResult launch_result = launch_kernel(device_buffer_, 1);
+    if (launch_result != ProcessingResult::Success) {
+        return launch_result;
+    }
+    
+    // Copy result back
+    result = cudaMemcpy(event_data, device_buffer_, event_size, cudaMemcpyDeviceToHost);
+    if (result != cudaSuccess) {
+        return ProcessingResult::DeviceError;
+    }
+    
+    return ProcessingResult::Success;
 }
 
 ProcessingResult EventProcessor::Impl::process_events(void* events_buffer, size_t buffer_size, size_t event_count) {
@@ -131,29 +161,29 @@ ProcessingResult EventProcessor::Impl::process_events(void* events_buffer, size_
         return ProcessingResult::InvalidInput;
     }
     
-    try {
-        ensure_buffer_size(buffer_size);
-        
-        // Copy buffer to device
-        device_buffer_->copy_from_host(events_buffer, buffer_size);
-        
-        // Launch kernel
-        ProcessingResult result = launch_kernel(device_buffer_->get(), event_count);
-        
-        if (result != ProcessingResult::Success) {
-            return result;
-        }
-        
-        // Copy results back
-        device_buffer_->copy_to_host(events_buffer, buffer_size);
-        
-        return ProcessingResult::Success;
-        
-    } catch (const CudaException&) {
+    if (ensure_buffer_size(buffer_size) != ProcessingResult::Success) {
         return ProcessingResult::DeviceError;
-    } catch (const std::exception&) {
-        return ProcessingResult::Error;
     }
+    
+    // Copy buffer to device
+    cudaError_t result = cudaMemcpy(device_buffer_, events_buffer, buffer_size, cudaMemcpyHostToDevice);
+    if (result != cudaSuccess) {
+        return ProcessingResult::DeviceError;
+    }
+    
+    // Launch kernel
+    ProcessingResult launch_result = launch_kernel(device_buffer_, event_count);
+    if (launch_result != ProcessingResult::Success) {
+        return launch_result;
+    }
+    
+    // Copy results back
+    result = cudaMemcpy(events_buffer, device_buffer_, buffer_size, cudaMemcpyDeviceToHost);
+    if (result != cudaSuccess) {
+        return ProcessingResult::DeviceError;
+    }
+    
+    return ProcessingResult::Success;
 }
 
 GpuDeviceInfo EventProcessor::Impl::get_device_info() const {
@@ -161,9 +191,7 @@ GpuDeviceInfo EventProcessor::Impl::get_device_info() const {
         throw std::runtime_error("Device not initialized");
     }
     
-    // Get device ID from context and query device manager
-    // For now, assume device 0 - in a real implementation, we'd track the device ID
-    return device_manager_.get_device_info(0);
+    return device_manager_.get_device_info(device_id_);
 }
 
 size_t EventProcessor::Impl::get_available_memory() const {
@@ -171,17 +199,29 @@ size_t EventProcessor::Impl::get_available_memory() const {
         return 0;
     }
     
-    return device_manager_.get_available_memory(0);
+    return device_manager_.get_available_memory(device_id_);
 }
 
 bool EventProcessor::Impl::is_ready() const {
     return context_ && device_buffer_ && module_ && kernel_function_;
 }
 
-void EventProcessor::Impl::ensure_buffer_size(size_t required_size) {
-    if (!device_buffer_ || device_buffer_->size() < required_size) {
-        device_buffer_ = std::make_unique<DeviceMemory>(std::max(required_size, config_.buffer_size));
+ProcessingResult EventProcessor::Impl::ensure_buffer_size(size_t required_size) {
+    if (!device_buffer_ || buffer_size_ < required_size) {
+        if (device_buffer_) {
+            cudaFree(device_buffer_);
+        }
+        
+        size_t new_size = std::max(required_size, config_.buffer_size);
+        cudaError_t result = cudaMalloc(&device_buffer_, new_size);
+        if (result != cudaSuccess) {
+            device_buffer_ = nullptr;
+            buffer_size_ = 0;
+            return ProcessingResult::DeviceError;
+        }
+        buffer_size_ = new_size;
     }
+    return ProcessingResult::Success;
 }
 
 ProcessingResult EventProcessor::Impl::launch_kernel(void* device_data, size_t event_count) {
@@ -189,40 +229,44 @@ ProcessingResult EventProcessor::Impl::launch_kernel(void* device_data, size_t e
         return ProcessingResult::KernelError;
     }
     
-    try {
-        context_->set_current();
-        
-        // Set up kernel parameters
-        void* args[] = {
-            &device_data,
-            &event_count
-        };
-        
-        // Calculate grid and block dimensions
-        int block_size = 256;
-        int grid_size = (event_count + block_size - 1) / block_size;
-        
-        // Launch kernel
-        CUresult result = cuLaunchKernel(
-            kernel_function_,
-            grid_size, 1, 1,    // Grid dimensions
-            block_size, 1, 1,   // Block dimensions
-            0,                  // Shared memory
-            0,                  // Stream
-            args,               // Parameters
-            nullptr             // Extra
-        );
-        
-        check_cuda_driver(result, "cuLaunchKernel");
-        
-        // Synchronize
-        check_cuda_runtime(cudaDeviceSynchronize(), "cudaDeviceSynchronize");
-        
-        return ProcessingResult::Success;
-        
-    } catch (const CudaException&) {
+    // Set current context
+    CUresult result = cuCtxSetCurrent(context_);
+    if (result != CUDA_SUCCESS) {
         return ProcessingResult::DeviceError;
     }
+    
+    // Set up kernel parameters
+    void* args[] = {
+        &device_data,
+        &event_count
+    };
+    
+    // Calculate grid and block dimensions
+    int block_size = 256;
+    int grid_size = (event_count + block_size - 1) / block_size;
+    
+    // Launch kernel
+    result = cuLaunchKernel(
+        kernel_function_,
+        grid_size, 1, 1,    // Grid dimensions
+        block_size, 1, 1,   // Block dimensions
+        0,                  // Shared memory
+        0,                  // Stream
+        args,               // Parameters
+        nullptr             // Extra
+    );
+    
+    if (result != CUDA_SUCCESS) {
+        return ProcessingResult::KernelError;
+    }
+    
+    // Synchronize
+    cudaError_t cuda_result = cudaDeviceSynchronize();
+    if (cuda_result != cudaSuccess) {
+        return ProcessingResult::DeviceError;
+    }
+    
+    return ProcessingResult::Success;
 }
 
 // EventProcessor public interface implementation

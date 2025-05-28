@@ -54,7 +54,7 @@ std::vector<NetworkEvent> copy_events(const std::vector<NetworkEvent>& events) {
     return events; // Simple copy
 }
 
-TEST_CASE("Performance - Basic Operations", "[performance]") {
+TEST_CASE("Performance - Basic Operations", "[performance][benchmark]") {
     auto devices = get_available_devices();
     if (devices.empty()) {
         SKIP("No CUDA devices available for performance testing");
@@ -96,7 +96,7 @@ TEST_CASE("Performance - Basic Operations", "[performance]") {
     REQUIRE(validate_results(events_1000));
 }
 
-TEST_CASE("Performance - Scaling Test", "[performance]") {
+TEST_CASE("Performance - Scaling Test", "[performance][benchmark]") {
     auto devices = get_available_devices();
     if (devices.empty()) {
         SKIP("No CUDA devices available for performance testing");
@@ -184,7 +184,7 @@ TEST_CASE("Performance - Scaling Test", "[performance]") {
     }
 }
 
-TEST_CASE("Performance - Single vs Multiple Events", "[performance]") {
+TEST_CASE("Performance - Single vs Multiple Events", "[performance][benchmark]") {
     auto devices = get_available_devices();
     if (devices.empty()) {
         SKIP("No CUDA devices available for performance testing");
@@ -246,7 +246,7 @@ TEST_CASE("Performance - Single vs Multiple Events", "[performance]") {
     REQUIRE((single_event.action == 0 || single_event.action == 1));
 }
 
-TEST_CASE("Performance - Memory Transfer vs Compute", "[performance]") {
+TEST_CASE("Performance - Memory Transfer vs Compute", "[performance][benchmark]") {
     auto devices = get_available_devices();
     if (devices.empty()) {
         SKIP("No CUDA devices available for performance testing");
@@ -349,7 +349,7 @@ TEST_CASE("Performance - Memory Transfer vs Compute", "[performance]") {
     }
 }
 
-TEST_CASE("Performance - Throughput Measurement", "[performance]") {
+TEST_CASE("Performance - Throughput Measurement", "[performance][benchmark]") {
     auto devices = get_available_devices();
     if (devices.empty()) {
         SKIP("No CUDA devices available for performance testing");
@@ -387,158 +387,4 @@ TEST_CASE("Performance - Throughput Measurement", "[performance]") {
     REQUIRE(final_result == ProcessingResult::Success);
     // Check a sample to avoid validating 100K events
     REQUIRE(validate_results(std::vector<NetworkEvent>(events.begin(), events.begin() + 1000)));
-}
-
-TEST_CASE("Performance - CPU vs GPU Comparison", "[performance][comparison]") {
-    auto devices = get_available_devices();
-    if (devices.empty()) {
-        SKIP("No CUDA devices available for performance testing");
-    }
-    
-    const char* ptx_code = get_test_ptx();
-    if (!ptx_code) {
-        SKIP("PTX file not found for performance testing");
-    }
-    
-    // Get the selected kernel name and corresponding CPU function
-    const char* selected_kernel = kernel_names::DEFAULT_TEST_KERNEL;
-    cpu::FilterFunction selected_cpu_function = cpu::get_cpu_function_by_name(selected_kernel);
-    const char* function_name = cpu::get_function_display_name(selected_kernel);
-    
-    // Setup GPU processor
-    EventProcessor processor;
-    processor.load_kernel_from_ptx(ptx_code, selected_kernel);
-    
-    // Test with different event counts
-    const std::vector<size_t> event_counts = {100, 1000, 10000};
-    
-    for (size_t event_count : event_counts) {
-        std::vector<NetworkEvent> gpu_events(event_count);
-        std::vector<NetworkEvent> cpu_events(event_count);
-        
-        create_test_events(gpu_events);
-        cpu_events = copy_events(gpu_events); // Ensure same input data
-        
-        // Warm up GPU
-        reset_event_actions(gpu_events);
-        size_t buffer_size = gpu_events.size() * sizeof(NetworkEvent);
-        processor.process_events(gpu_events.data(), buffer_size, gpu_events.size());
-        
-        std::string gpu_test_name = "GPU " + std::string(function_name) + " - " + std::to_string(event_count) + " events";
-        std::string cpu_test_name = "CPU " + std::string(function_name) + " - " + std::to_string(event_count) + " events";
-        
-        BENCHMARK_ADVANCED(gpu_test_name.c_str())(Catch::Benchmark::Chronometer meter) {
-            reset_event_actions(gpu_events);
-            meter.measure([&] {
-                return processor.process_events(gpu_events.data(), buffer_size, gpu_events.size());
-            });
-        };
-        
-        BENCHMARK_ADVANCED(cpu_test_name.c_str())(Catch::Benchmark::Chronometer meter) {
-            meter.measure([&] {
-                reset_event_actions(cpu_events);
-                selected_cpu_function(cpu_events.data(), cpu_events.size());
-                return cpu_events.size();
-            });
-        };
-        
-        // Validate both produce same results
-        reset_event_actions(gpu_events);
-        reset_event_actions(cpu_events);
-        
-        processor.process_events(gpu_events.data(), buffer_size, gpu_events.size());
-        selected_cpu_function(cpu_events.data(), cpu_events.size());
-        
-        // Compare results
-        bool results_match = true;
-        for (size_t i = 0; i < event_count; i++) {
-            if (gpu_events[i].action != cpu_events[i].action) {
-                results_match = false;
-                break;
-            }
-        }
-        REQUIRE(results_match);
-    }
-}
-
-TEST_CASE("Performance - Multiple Filter Comparison", "[performance][filters]") {
-    auto devices = get_available_devices();
-    if (devices.empty()) {
-        SKIP("No CUDA devices available for performance testing");
-    }
-    
-    const char* ptx_code = get_test_ptx();
-    if (!ptx_code) {
-        SKIP("PTX file not found for performance testing");
-    }
-    
-    // Test different filter types
-    const std::vector<const char*> test_kernels = {
-        kernel_names::SIMPLE_PACKET_FILTER,
-        kernel_names::PORT_BASED_FILTER,
-        kernel_names::MINIMAL_FILTER,
-        kernel_names::COMPLEX_FILTER
-    };
-    
-    const size_t event_count = 1000;
-    
-    for (const char* kernel_name : test_kernels) {
-        // Get corresponding CPU function
-        cpu::FilterFunction cpu_function = cpu::get_cpu_function_by_name(kernel_name);
-        const char* function_name = cpu::get_function_display_name(kernel_name);
-        
-        // Setup GPU processor for this kernel
-        EventProcessor processor;
-        processor.load_kernel_from_ptx(ptx_code, kernel_name);
-        
-        // Create test data
-        std::vector<NetworkEvent> gpu_events(event_count);
-        std::vector<NetworkEvent> cpu_events(event_count);
-        
-        create_test_events(gpu_events);
-        cpu_events = copy_events(gpu_events);
-        
-        // Warm up GPU
-        reset_event_actions(gpu_events);
-        size_t buffer_size = gpu_events.size() * sizeof(NetworkEvent);
-        processor.process_events(gpu_events.data(), buffer_size, gpu_events.size());
-        
-        std::string gpu_test_name = "GPU " + std::string(function_name);
-        std::string cpu_test_name = "CPU " + std::string(function_name);
-        
-        BENCHMARK_ADVANCED(gpu_test_name.c_str())(Catch::Benchmark::Chronometer meter) {
-            reset_event_actions(gpu_events);
-            meter.measure([&] {
-                return processor.process_events(gpu_events.data(), buffer_size, gpu_events.size());
-            });
-        };
-        
-        BENCHMARK_ADVANCED(cpu_test_name.c_str())(Catch::Benchmark::Chronometer meter) {
-            meter.measure([&] {
-                reset_event_actions(cpu_events);
-                cpu_function(cpu_events.data(), cpu_events.size());
-                return cpu_events.size();
-            });
-        };
-        
-        // Validate results match
-        reset_event_actions(gpu_events);
-        reset_event_actions(cpu_events);
-        
-        processor.process_events(gpu_events.data(), buffer_size, gpu_events.size());
-        cpu_function(cpu_events.data(), cpu_events.size());
-        
-        // Compare results (allow some differences for stateful filters)
-        bool results_match = true;
-        size_t mismatch_count = 0;
-        for (size_t i = 0; i < event_count; i++) {
-            if (gpu_events[i].action != cpu_events[i].action) {
-                mismatch_count++;
-            }
-        }
-        
-        // Allow up to 5% mismatch for complex/stateful filters due to implementation differences
-        double mismatch_rate = static_cast<double>(mismatch_count) / event_count;
-        REQUIRE(mismatch_rate < 0.05);
-    }
 }

@@ -1,7 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
+#include "ebpf_gpu_processor.hpp"
 #include "gpu_device_manager.hpp"
 #include "kernel_loader.hpp"
-#include "error_handling.hpp"
 #include <vector>
 
 using namespace ebpf_gpu;

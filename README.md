@@ -196,16 +196,19 @@ Performance varies by GPU and kernel complexity. Typical results:
 
 ## Error Handling
 
-### Exception Safety
-- **RAII**: Automatic resource cleanup
-- **Strong exception safety**: Operations either succeed completely or leave state unchanged
-- **Custom exceptions**: CUDA-specific error information
+### Error Codes
+The library uses simple CUDA error codes and standard exceptions for error handling:
+- **ProcessingResult enum**: Success, Error, InvalidInput, DeviceError, KernelError
+- **CUDA error codes**: Direct use of cudaError_t and CUresult
+- **std::runtime_error**: For general runtime errors
+- **std::invalid_argument**: For invalid input parameters
 
 ### Error Categories
-- **CudaRuntimeException**: CUDA runtime API errors
-- **CudaDriverException**: CUDA driver API errors
-- **std::invalid_argument**: Invalid input parameters
-- **std::runtime_error**: General runtime errors
+- **ProcessingResult::Success**: Operation completed successfully
+- **ProcessingResult::Error**: General error
+- **ProcessingResult::InvalidInput**: Invalid input parameters
+- **ProcessingResult::DeviceError**: CUDA device or memory errors
+- **ProcessingResult::KernelError**: Kernel loading or execution errors
 
 ## Contributing
 

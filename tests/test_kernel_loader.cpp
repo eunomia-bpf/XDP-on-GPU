@@ -1,6 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
 #include "kernel_loader.hpp"
-#include "error_handling.hpp"
 #include <fstream>
 #include <sstream>
 
