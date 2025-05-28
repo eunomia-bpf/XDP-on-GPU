@@ -71,6 +71,9 @@ private:
     ProcessingResult process_batch_internal(const EventBatch& batch);
     cudaStream_t get_available_stream();
     static void CUDART_CB batch_completion_callback(cudaStream_t stream, cudaError_t status, void* user_data);
+    
+    // Context management
+    ProcessingResult ensure_context_current();
 };
 
 } // namespace ebpf_gpu 

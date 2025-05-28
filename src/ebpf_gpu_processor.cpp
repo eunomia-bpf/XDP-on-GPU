@@ -57,6 +57,12 @@ void EventProcessor::Impl::initialize_device() {
         throw std::runtime_error("Failed to create CUDA context");
     }
     
+    // Set this context as current immediately after creation
+    result = cuCtxSetCurrent(context_);
+    if (result != CUDA_SUCCESS) {
+        throw std::runtime_error("Failed to set CUDA context as current");
+    }
+    
     // Allocate device buffer
     cudaError_t cuda_result = cudaMalloc(&device_buffer_, config_.buffer_size);
     if (cuda_result != cudaSuccess) {
@@ -158,9 +164,9 @@ ProcessingResult EventProcessor::Impl::process_event(void* event_data, size_t ev
         return ProcessingResult::DeviceError;
     }
     
-    // Set current context to ensure we're using the right device
-    CUresult cu_result = cuCtxSetCurrent(context_);
-    if (cu_result != CUDA_SUCCESS) {
+    // Use the new method to ensure context is current
+    ProcessingResult ctx_result = ensure_context_current();
+    if (ctx_result != ProcessingResult::Success) {
         return ProcessingResult::DeviceError;
     }
     
@@ -206,9 +212,9 @@ ProcessingResult EventProcessor::Impl::process_events(void* events_buffer, size_
         return ProcessingResult::DeviceError;
     }
     
-    // Set current context to ensure we're using the right device
-    CUresult cu_result = cuCtxSetCurrent(context_);
-    if (cu_result != CUDA_SUCCESS) {
+    // Use ensure_context_current instead of direct context setting
+    ProcessingResult ctx_result = ensure_context_current();
+    if (ctx_result != ProcessingResult::Success) {
         return ProcessingResult::DeviceError;
     }
     
@@ -284,9 +290,9 @@ ProcessingResult EventProcessor::Impl::launch_kernel(void* device_data, size_t e
         return ProcessingResult::KernelError;
     }
     
-    // Set current context
-    CUresult result = cuCtxSetCurrent(context_);
-    if (result != CUDA_SUCCESS) {
+    // Use ensure_context_current instead of direct context setting
+    ProcessingResult ctx_result = ensure_context_current();
+    if (ctx_result != ProcessingResult::Success) {
         return ProcessingResult::DeviceError;
     }
     
@@ -306,7 +312,7 @@ ProcessingResult EventProcessor::Impl::launch_kernel(void* device_data, size_t e
     }
     
     // Launch kernel
-    result = cuLaunchKernel(
+    CUresult result = cuLaunchKernel(
         kernel_function_,
         grid_size, 1, 1,    // Grid dimensions
         block_size, 1, 1,   // Block dimensions
@@ -453,30 +459,28 @@ ProcessingResult EventProcessor::Impl::process_batch_internal(const EventBatch& 
         return ProcessingResult::InvalidInput;
     }
     
-    // Set current context to ensure we're using the right device
-    CUresult cu_result = cuCtxSetCurrent(context_);
-    if (cu_result != CUDA_SUCCESS) {
+    // Use ensure_context_current instead of direct context setting
+    ProcessingResult ctx_result = ensure_context_current();
+    if (ctx_result != ProcessingResult::Success) {
         return ProcessingResult::DeviceError;
     }
     
-    // Create a device buffer for this specific batch if needed
-    void* batch_device_buffer = nullptr;
-    cudaError_t result = cudaMalloc(&batch_device_buffer, batch.size);
-    if (result != cudaSuccess) {
+    // Use existing buffer and ensure it's large enough
+    ProcessingResult buffer_result = ensure_buffer_size(batch.size);
+    if (buffer_result != ProcessingResult::Success) {
         return ProcessingResult::DeviceError;
     }
     
     // Copy data to device asynchronously using the provided stream
-    result = cudaMemcpyAsync(batch_device_buffer, batch.data, batch.size, 
+    cudaError_t result = cudaMemcpyAsync(device_buffer_, batch.data, batch.size, 
                            cudaMemcpyHostToDevice, batch.stream);
     if (result != cudaSuccess) {
-        cudaFree(batch_device_buffer);
         return ProcessingResult::DeviceError;
     }
     
     // Set up kernel parameters
     void* args[] = {
-        &batch_device_buffer,
+        &device_buffer_,
         (void*)&batch.count
     };
     
@@ -490,7 +494,7 @@ ProcessingResult EventProcessor::Impl::process_batch_internal(const EventBatch& 
     }
     
     // Launch kernel asynchronously
-    cu_result = cuLaunchKernel(
+    CUresult cu_result = cuLaunchKernel(
         kernel_function_,
         grid_size, 1, 1,    // Grid dimensions
         block_size, 1, 1,   // Block dimensions
@@ -501,27 +505,14 @@ ProcessingResult EventProcessor::Impl::process_batch_internal(const EventBatch& 
     );
     
     if (cu_result != CUDA_SUCCESS) {
-        cudaFree(batch_device_buffer);
         return ProcessingResult::KernelError;
     }
     
     // Copy results back to host asynchronously
-    result = cudaMemcpyAsync(batch.data, batch_device_buffer, batch.size,
+    result = cudaMemcpyAsync(batch.data, device_buffer_, batch.size,
                            cudaMemcpyDeviceToHost, batch.stream);
     if (result != cudaSuccess) {
-        cudaFree(batch_device_buffer);
         return ProcessingResult::DeviceError;
-    }
-    
-    // Schedule cleanup of device memory after all operations complete
-    result = cudaStreamAddCallback(batch.stream, [](cudaStream_t stream, cudaError_t status, void* userData) {
-        void* buffer = static_cast<void*>(userData);
-        cudaFree(buffer);
-    }, batch_device_buffer, 0);
-    
-    if (result != cudaSuccess) {
-        // If we can't add the callback, free the memory now
-        cudaFree(batch_device_buffer);
     }
     
     return ProcessingResult::Success;
@@ -627,6 +618,28 @@ int select_best_device(size_t min_memory) {
 
 bool validate_ptx_code(const std::string& ptx_code) {
     return KernelLoader::validate_ptx(ptx_code);
+}
+
+ProcessingResult EventProcessor::Impl::ensure_context_current() {
+    // Only set the context if it's not already current
+    CUcontext current = nullptr;
+    CUresult result = cuCtxGetCurrent(&current);
+    if (result != CUDA_SUCCESS) {
+        return ProcessingResult::DeviceError;
+    }
+    
+    // If the context is already set correctly, no need to set it again
+    if (current == context_) {
+        return ProcessingResult::Success;
+    }
+    
+    // Set the context since it's different
+    result = cuCtxSetCurrent(context_);
+    if (result != CUDA_SUCCESS) {
+        return ProcessingResult::DeviceError;
+    }
+    
+    return ProcessingResult::Success;
 }
 
 } // namespace ebpf_gpu 
