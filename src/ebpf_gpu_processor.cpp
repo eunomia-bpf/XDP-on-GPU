@@ -2,8 +2,6 @@
 #include "error_handling.hpp"
 #include "gpu_device_manager.hpp"
 #include "kernel_loader.hpp"
-#include <chrono>
-#include <algorithm>
 
 namespace ebpf_gpu {
 
@@ -25,18 +23,12 @@ public:
                                 const std::vector<std::string>& include_paths,
                                 const std::vector<std::string>& compile_options);
 
-    ProcessingResult process_events(std::vector<NetworkEvent>& events);
-    ProcessingResult process_events(NetworkEvent* events, size_t count);
-    ProcessingResult process_events_async(std::vector<NetworkEvent>& events,
-                                        std::function<void(ProcessingResult)> callback);
-    ProcessingResult process_buffer(void* buffer, size_t buffer_size, size_t event_count);
+    ProcessingResult process_event(void* event_data, size_t event_size);
+    ProcessingResult process_events(void* events_buffer, size_t buffer_size, size_t event_count);
 
     GpuDeviceInfo get_device_info() const;
     size_t get_available_memory() const;
     bool is_ready() const;
-
-    PerformanceStats get_performance_stats() const;
-    void reset_performance_stats();
 
 private:
     Config config_;
@@ -45,8 +37,6 @@ private:
     std::unique_ptr<CudaModule> module_;
     CUfunction kernel_function_;
     GpuDeviceManager device_manager_;
-    
-    mutable PerformanceStats stats_;
     
     void initialize_device();
     void ensure_buffer_size(size_t required_size);
@@ -98,56 +88,30 @@ void EventProcessor::Impl::load_kernel_from_source(const std::string& cuda_sourc
     kernel_function_ = module_->get_function(function_name);
 }
 
-ProcessingResult EventProcessor::Impl::process_events(std::vector<NetworkEvent>& events) {
-    return process_events(events.data(), events.size());
-}
-
-ProcessingResult EventProcessor::Impl::process_events(NetworkEvent* events, size_t count) {
+ProcessingResult EventProcessor::Impl::process_event(void* event_data, size_t event_size) {
     if (!is_ready()) {
         return ProcessingResult::KernelError;
     }
     
-    if (count == 0) {
+    if (!event_data || event_size == 0) {
         return ProcessingResult::InvalidInput;
     }
     
-    auto start_time = std::chrono::high_resolution_clock::now();
-    
     try {
-        size_t required_size = count * sizeof(NetworkEvent);
-        ensure_buffer_size(required_size);
+        ensure_buffer_size(event_size);
         
-        // Copy events to device
-        auto transfer_start = std::chrono::high_resolution_clock::now();
-        device_buffer_->copy_from_host(events, required_size);
-        auto transfer_end = std::chrono::high_resolution_clock::now();
+        // Copy event to device
+        device_buffer_->copy_from_host(event_data, event_size);
         
-        // Launch kernel
-        auto kernel_start = std::chrono::high_resolution_clock::now();
-        ProcessingResult result = launch_kernel(device_buffer_->get(), count);
-        auto kernel_end = std::chrono::high_resolution_clock::now();
+        // Launch kernel for single event
+        ProcessingResult result = launch_kernel(device_buffer_->get(), 1);
         
         if (result != ProcessingResult::Success) {
             return result;
         }
         
-        // Copy results back
-        device_buffer_->copy_to_host(events, required_size);
-        auto end_time = std::chrono::high_resolution_clock::now();
-        
-        // Update performance stats
-        stats_.events_processed += count;
-        auto total_time = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
-        auto kernel_time = std::chrono::duration_cast<std::chrono::microseconds>(kernel_end - kernel_start).count();
-        auto transfer_time = std::chrono::duration_cast<std::chrono::microseconds>(transfer_end - transfer_start).count();
-        
-        stats_.total_processing_time_us += total_time;
-        stats_.kernel_execution_time_us += kernel_time;
-        stats_.memory_transfer_time_us += transfer_time;
-        
-        if (stats_.total_processing_time_us > 0) {
-            stats_.events_per_second = (stats_.events_processed * 1000000.0) / stats_.total_processing_time_us;
-        }
+        // Copy result back
+        device_buffer_->copy_to_host(event_data, event_size);
         
         return ProcessingResult::Success;
         
@@ -158,61 +122,30 @@ ProcessingResult EventProcessor::Impl::process_events(NetworkEvent* events, size
     }
 }
 
-ProcessingResult EventProcessor::Impl::process_events_async(std::vector<NetworkEvent>& events,
-                                                           std::function<void(ProcessingResult)> callback) {
-    // For now, implement synchronously
-    ProcessingResult result = process_events(events);
-    if (callback) {
-        callback(result);
-    }
-    return result;
-}
-
-ProcessingResult EventProcessor::Impl::process_buffer(void* buffer, size_t buffer_size, size_t event_count) {
+ProcessingResult EventProcessor::Impl::process_events(void* events_buffer, size_t buffer_size, size_t event_count) {
     if (!is_ready()) {
         return ProcessingResult::KernelError;
     }
     
-    if (!buffer || buffer_size == 0 || event_count == 0) {
+    if (!events_buffer || buffer_size == 0 || event_count == 0) {
         return ProcessingResult::InvalidInput;
     }
-    
-    auto start_time = std::chrono::high_resolution_clock::now();
     
     try {
         ensure_buffer_size(buffer_size);
         
         // Copy buffer to device
-        auto transfer_start = std::chrono::high_resolution_clock::now();
-        device_buffer_->copy_from_host(buffer, buffer_size);
-        auto transfer_end = std::chrono::high_resolution_clock::now();
+        device_buffer_->copy_from_host(events_buffer, buffer_size);
         
         // Launch kernel
-        auto kernel_start = std::chrono::high_resolution_clock::now();
         ProcessingResult result = launch_kernel(device_buffer_->get(), event_count);
-        auto kernel_end = std::chrono::high_resolution_clock::now();
         
         if (result != ProcessingResult::Success) {
             return result;
         }
         
         // Copy results back
-        device_buffer_->copy_to_host(buffer, buffer_size);
-        auto end_time = std::chrono::high_resolution_clock::now();
-        
-        // Update performance stats
-        stats_.events_processed += event_count;
-        auto total_time = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
-        auto kernel_time = std::chrono::duration_cast<std::chrono::microseconds>(kernel_end - kernel_start).count();
-        auto transfer_time = std::chrono::duration_cast<std::chrono::microseconds>(transfer_end - transfer_start).count();
-        
-        stats_.total_processing_time_us += total_time;
-        stats_.kernel_execution_time_us += kernel_time;
-        stats_.memory_transfer_time_us += transfer_time;
-        
-        if (stats_.total_processing_time_us > 0) {
-            stats_.events_per_second = (stats_.events_processed * 1000000.0) / stats_.total_processing_time_us;
-        }
+        device_buffer_->copy_to_host(events_buffer, buffer_size);
         
         return ProcessingResult::Success;
         
@@ -243,14 +176,6 @@ size_t EventProcessor::Impl::get_available_memory() const {
 
 bool EventProcessor::Impl::is_ready() const {
     return context_ && device_buffer_ && module_ && kernel_function_;
-}
-
-EventProcessor::PerformanceStats EventProcessor::Impl::get_performance_stats() const {
-    return stats_;
-}
-
-void EventProcessor::Impl::reset_performance_stats() {
-    stats_ = PerformanceStats{};
 }
 
 void EventProcessor::Impl::ensure_buffer_size(size_t required_size) {
@@ -323,21 +248,12 @@ void EventProcessor::load_kernel_from_source(const std::string& cuda_source, con
     pimpl_->load_kernel_from_source(cuda_source, function_name, include_paths, compile_options);
 }
 
-ProcessingResult EventProcessor::process_events(std::vector<NetworkEvent>& events) {
-    return pimpl_->process_events(events);
+ProcessingResult EventProcessor::process_event(void* event_data, size_t event_size) {
+    return pimpl_->process_event(event_data, event_size);
 }
 
-ProcessingResult EventProcessor::process_events(NetworkEvent* events, size_t count) {
-    return pimpl_->process_events(events, count);
-}
-
-ProcessingResult EventProcessor::process_events_async(std::vector<NetworkEvent>& events,
-                                                     std::function<void(ProcessingResult)> callback) {
-    return pimpl_->process_events_async(events, callback);
-}
-
-ProcessingResult EventProcessor::process_buffer(void* buffer, size_t buffer_size, size_t event_count) {
-    return pimpl_->process_buffer(buffer, buffer_size, event_count);
+ProcessingResult EventProcessor::process_events(void* events_buffer, size_t buffer_size, size_t event_count) {
+    return pimpl_->process_events(events_buffer, buffer_size, event_count);
 }
 
 GpuDeviceInfo EventProcessor::get_device_info() const {
@@ -350,14 +266,6 @@ size_t EventProcessor::get_available_memory() const {
 
 bool EventProcessor::is_ready() const {
     return pimpl_->is_ready();
-}
-
-EventProcessor::PerformanceStats EventProcessor::get_performance_stats() const {
-    return pimpl_->get_performance_stats();
-}
-
-void EventProcessor::reset_performance_stats() {
-    pimpl_->reset_performance_stats();
 }
 
 // Utility functions

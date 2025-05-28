@@ -79,8 +79,9 @@ int test_cpp_api() {
             print_event(events[i], i);
         }
         
-        // Process events
-        ProcessingResult result = processor.process_events(events);
+        // Process events using the new interface
+        size_t buffer_size = events.size() * sizeof(NetworkEvent);
+        ProcessingResult result = processor.process_events(events.data(), buffer_size, events.size());
         if (result != ProcessingResult::Success) {
             cout << "Failed to process events" << endl;
             return -1;
@@ -91,13 +92,6 @@ int test_cpp_api() {
             print_event(events[i], i);
         }
         
-        // Test performance stats
-        auto stats = processor.get_performance_stats();
-        cout << "Performance stats:" << endl;
-        cout << "  Events processed: " << stats.events_processed << endl;
-        cout << "  Total time: " << stats.total_processing_time_us << " us" << endl;
-        cout << "  Events per second: " << stats.events_per_second << endl;
-        
         cout << "C++ API test completed successfully!" << endl << endl;
         return 0;
         
@@ -107,8 +101,58 @@ int test_cpp_api() {
     }
 }
 
+int test_single_event_interface() {
+    cout << "=== Testing Single Event Interface ===" << endl;
+    
+    try {
+        EventProcessor processor;
+        
+        // Get PTX code
+        const char* ptx_code = get_test_ptx();
+        if (!ptx_code) {
+            cout << "Failed to load PTX code" << endl;
+            return -1;
+        }
+        
+        // Load PTX kernel
+        processor.load_kernel_from_ptx(ptx_code, "_Z20simple_packet_filterPN8ebpf_gpu12NetworkEventEm");
+        
+        // Create a single event
+        NetworkEvent event;
+        event.data = nullptr;
+        event.length = 128;
+        event.timestamp = time(nullptr) * 1000000;
+        event.src_ip = 0xC0A80001; // 192.168.0.1
+        event.dst_ip = 0x08080808; // 8.8.8.8
+        event.src_port = 12345;
+        event.dst_port = 80;
+        event.protocol = 6; // TCP
+        event.action = 0; // DROP
+        
+        cout << "Single event before processing:" << endl;
+        print_event(event, 0);
+        
+        // Process single event
+        ProcessingResult result = processor.process_event(&event, sizeof(NetworkEvent));
+        if (result != ProcessingResult::Success) {
+            cout << "Failed to process single event" << endl;
+            return -1;
+        }
+        
+        cout << "Single event after processing:" << endl;
+        print_event(event, 0);
+        
+        cout << "Single event interface test completed successfully!" << endl << endl;
+        return 0;
+        
+    } catch (const exception& e) {
+        cout << "Exception: " << e.what() << endl;
+        return -1;
+    }
+}
+
 int test_buffer_interface() {
-    cout << "=== Testing Buffer Interface ===" << endl;
+    cout << "=== Testing Multiple Events Interface ===" << endl;
     
     try {
         EventProcessor processor;
@@ -134,8 +178,8 @@ int test_buffer_interface() {
             print_event(events[i], i);
         }
         
-        // Process events using buffer interface
-        ProcessingResult result = processor.process_buffer(events.data(), buffer_size, num_events);
+        // Process events using new buffer interface
+        ProcessingResult result = processor.process_events(events.data(), buffer_size, num_events);
         if (result != ProcessingResult::Success) {
             cout << "Failed to process events buffer" << endl;
             return -1;
@@ -146,7 +190,7 @@ int test_buffer_interface() {
             print_event(events[i], i);
         }
         
-        cout << "Buffer interface test completed successfully!" << endl << endl;
+        cout << "Multiple events interface test completed successfully!" << endl << endl;
         return 0;
         
     } catch (const exception& e) {
@@ -165,9 +209,15 @@ int main() {
         return -1;
     }
     
-    // Test buffer interface
+    // Test single event interface
+    if (test_single_event_interface() != 0) {
+        cout << "Single event interface test failed" << endl;
+        return -1;
+    }
+    
+    // Test multiple events interface
     if (test_buffer_interface() != 0) {
-        cout << "Buffer interface test failed" << endl;
+        cout << "Multiple events interface test failed" << endl;
         return -1;
     }
     

@@ -69,7 +69,8 @@ TEST_CASE("Performance - Basic Operations", "[performance]") {
             // Reset actions before processing
             for (auto& event : events_100) event.action = 0;
             
-            ProcessingResult result = processor.process_events(events_100);
+            size_t buffer_size = events_100.size() * sizeof(NetworkEvent);
+            ProcessingResult result = processor.process_events(events_100.data(), buffer_size, events_100.size());
             
             // Validate results
             if (result == ProcessingResult::Success) {
@@ -103,7 +104,8 @@ TEST_CASE("Performance - Scaling Test", "[performance]") {
             
             for (auto& event : events) event.action = 0;
             
-            ProcessingResult result = processor.process_events(events);
+            size_t buffer_size = events.size() * sizeof(NetworkEvent);
+            ProcessingResult result = processor.process_events(events.data(), buffer_size, events.size());
             
             if (result == ProcessingResult::Success) {
                 REQUIRE(validate_results(events));
@@ -119,7 +121,7 @@ TEST_CASE("Performance - Scaling Test", "[performance]") {
     };
 }
 
-TEST_CASE("Performance - Interface Comparison", "[performance]") {
+TEST_CASE("Performance - Single vs Multiple Events", "[performance]") {
     auto devices = get_available_devices();
     if (devices.empty()) {
         SKIP("No CUDA devices available for performance testing");
@@ -135,14 +137,15 @@ TEST_CASE("Performance - Interface Comparison", "[performance]") {
     processor.load_kernel_from_ptx(ptx_code, "_Z20simple_packet_filterPN8ebpf_gpu12NetworkEventEm");
     
     // Pre-create test data
-    const size_t num_events = 10000;
+    const size_t num_events = 1000;
     std::vector<NetworkEvent> events(num_events);
     create_test_events(events);
     
-    BENCHMARK("Vector interface - 10K events") {
+    BENCHMARK("Multiple events interface - 1K events") {
         for (auto& event : events) event.action = 0;
         
-        ProcessingResult result = processor.process_events(events);
+        size_t buffer_size = events.size() * sizeof(NetworkEvent);
+        ProcessingResult result = processor.process_events(events.data(), buffer_size, events.size());
         
         if (result == ProcessingResult::Success) {
             REQUIRE(validate_results(events));
@@ -150,15 +153,16 @@ TEST_CASE("Performance - Interface Comparison", "[performance]") {
         return static_cast<int>(result);
     };
     
-    BENCHMARK("Buffer interface - 10K events") {
-        for (auto& event : events) event.action = 0;
+    BENCHMARK("Single event interface - 1K times") {
+        NetworkEvent single_event = events[0];
+        int total_result = 0;
         
-        size_t buffer_size = events.size() * sizeof(NetworkEvent);
-        ProcessingResult result = processor.process_buffer(events.data(), buffer_size, num_events);
-        
-        if (result == ProcessingResult::Success) {
-            REQUIRE(validate_results(events));
+        for (size_t i = 0; i < num_events; i++) {
+            single_event.action = 0;
+            ProcessingResult result = processor.process_event(&single_event, sizeof(NetworkEvent));
+            total_result += static_cast<int>(result);
         }
-        return static_cast<int>(result);
+        
+        return total_result;
     };
 }

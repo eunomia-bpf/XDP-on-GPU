@@ -2,6 +2,20 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
+
+// NetworkEvent definition for testing purposes
+struct NetworkEvent {
+    uint8_t* data = nullptr;
+    uint32_t length = 0;
+    uint64_t timestamp = 0;
+    uint32_t src_ip = 0;
+    uint32_t dst_ip = 0;
+    uint16_t src_port = 0;
+    uint16_t dst_port = 0;
+    uint8_t protocol = 0;
+    uint8_t action = 0;  // 0=drop, 1=pass, 2=redirect
+};
 
 // Helper function to get PTX code - shared across all test files
 inline const char* get_test_ptx() {

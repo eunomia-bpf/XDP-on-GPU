@@ -10,21 +10,7 @@
 namespace ebpf_gpu {
 
 // Forward declarations
-struct NetworkEvent;
 class EventProcessor;
-
-// Modern C++ API
-struct NetworkEvent {
-    uint8_t* data = nullptr;
-    uint32_t length = 0;
-    uint64_t timestamp = 0;
-    uint32_t src_ip = 0;
-    uint32_t dst_ip = 0;
-    uint16_t src_port = 0;
-    uint16_t dst_port = 0;
-    uint8_t protocol = 0;
-    uint8_t action = 0;  // 0=drop, 1=pass, 2=redirect
-};
 
 enum class ProcessingResult {
     Success = 0,
@@ -61,31 +47,17 @@ public:
                                 const std::vector<std::string>& include_paths = {},
                                 const std::vector<std::string>& compile_options = {});
 
-    // Event processing
-    ProcessingResult process_events(std::vector<NetworkEvent>& events);
-    ProcessingResult process_events(NetworkEvent* events, size_t count);
-    ProcessingResult process_events_async(std::vector<NetworkEvent>& events,
-                                        std::function<void(ProcessingResult)> callback = {});
-
-    // Buffer-based processing (zero-copy)
-    ProcessingResult process_buffer(void* buffer, size_t buffer_size, size_t event_count);
+    // Event processing - simplified interface
+    // Single event processing
+    ProcessingResult process_event(void* event_data, size_t event_size);
+    
+    // Multiple events processing (zero-copy)
+    ProcessingResult process_events(void* events_buffer, size_t buffer_size, size_t event_count);
 
     // Device information
     GpuDeviceInfo get_device_info() const;
     size_t get_available_memory() const;
     bool is_ready() const;
-
-    // Performance monitoring
-    struct PerformanceStats {
-        uint64_t events_processed = 0;
-        uint64_t total_processing_time_us = 0;
-        uint64_t kernel_execution_time_us = 0;
-        uint64_t memory_transfer_time_us = 0;
-        double events_per_second = 0.0;
-    };
-    
-    PerformanceStats get_performance_stats() const;
-    void reset_performance_stats();
 
 private:
     class Impl;
