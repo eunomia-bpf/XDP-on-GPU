@@ -54,7 +54,6 @@ private:
         void* data;
         size_t size;
         size_t count;
-        EventProcessingCallback callback;
         cudaStream_t stream;
         bool owns_memory;  // Whether the batch owns the data buffer
         
@@ -63,13 +62,13 @@ private:
         void* device_buffer;  // Device buffer used for this batch (may be different from device_buffer_)
         
         // Constructor with default initialization
-        EventBatch() : data(nullptr), size(0), count(0), callback(nullptr), stream(nullptr),
+        EventBatch() : data(nullptr), size(0), count(0), stream(nullptr),
                       owns_memory(false), owns_buffer(false), device_buffer(nullptr) {}
         
         // Constructor with parameters
-        EventBatch(void* _data, size_t _size, size_t _count, EventProcessingCallback _callback,
+        EventBatch(void* _data, size_t _size, size_t _count,
                   cudaStream_t _stream, bool _owns_memory) 
-            : data(_data), size(_size), count(_count), callback(_callback), stream(_stream),
+            : data(_data), size(_size), count(_count), stream(_stream),
               owns_memory(_owns_memory), owns_buffer(false), device_buffer(nullptr) {}
     };
     
@@ -82,9 +81,7 @@ private:
     // Async processing methods
     void initialize_streams();
     void cleanup_streams();
-    ProcessingResult process_batch_internal(const EventBatch& batch);
     cudaStream_t get_available_stream();
-    static void CUDART_CB batch_completion_callback(cudaStream_t stream, cudaError_t status, void* user_data);
     
     // Context management
     ProcessingResult ensure_context_current();

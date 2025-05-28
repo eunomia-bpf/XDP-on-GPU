@@ -19,9 +19,6 @@ enum class ProcessingResult {
     KernelError = -4
 };
 
-// Callback type for asynchronous processing results
-using EventProcessingCallback = std::function<void(ProcessingResult, void*, size_t)>;
-
 class EventProcessor {
 public:
     struct Config {
@@ -37,7 +34,9 @@ public:
         
         // Async configuration
         int max_stream_count;  // Maximum number of CUDA streams (0 for default)
-        EventProcessingCallback default_callback = nullptr;  // Default callback for async operations
+        
+        // Batch processing configuration
+        size_t max_batch_size; // Maximum batch size for processing (0 for no limit)
         
         Config() : device_id(-1), 
                   buffer_size(1024 * 1024), 
@@ -47,7 +46,7 @@ public:
                   shared_memory_size(0),  // No shared memory by default
                   max_grid_size(65535),  // CUDA maximum grid dimension
                   max_stream_count(4),    // Default number of CUDA streams
-                  default_callback(nullptr)
+                  max_batch_size(1000000)  // Default max batch size (100k)
         {}
     };
 

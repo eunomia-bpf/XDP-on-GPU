@@ -215,90 +215,185 @@ ProcessingResult EventProcessor::Impl::process_events(void* events_buffer, size_
         return ProcessingResult::DeviceError;
     }
     
-    // Ensure the device buffer is large enough
-    ProcessingResult buffer_result = ensure_buffer_size(buffer_size);
-    if (buffer_result != ProcessingResult::Success) {
-        return ProcessingResult::DeviceError;
-    }
+    // Determine the optimal batch size for processing
+    // If max_batch_size is 0 or greater than event_count, use event_count as batch_size
+    size_t batch_size = (config_.max_batch_size > 0 && config_.max_batch_size < event_count) 
+                      ? config_.max_batch_size : event_count;
     
-    // Get a stream for this operation
-    cudaStream_t stream = get_available_stream();
+    // Calculate the number of batches
+    size_t num_batches = (event_count + batch_size - 1) / batch_size; // Ceiling division
     
-    // Always use asynchronous API internally
-    cudaError_t result;
-    
-    // Transfer data to device asynchronously
-    result = cudaMemcpyAsync(device_buffer_, events_buffer, buffer_size, 
-                          cudaMemcpyHostToDevice, stream);
-    if (result != cudaSuccess) {
-        return ProcessingResult::DeviceError;
-    }
-    
-    // Launch kernel asynchronously
-    void* kernel_args[] = {
-        &device_buffer_,
-        &event_count
-    };
-    
-    // Calculate grid and block dimensions using config values
-    int block_size = config_.block_size;
-    int grid_size = (event_count + block_size - 1) / block_size;
-    
-    // Apply max grid size limit if configured
-    if (config_.max_grid_size > 0 && grid_size > config_.max_grid_size) {
-        grid_size = config_.max_grid_size;
-    }
-    
-    // Launch kernel asynchronously using the CUDA driver API
-    CUresult cu_result = cuLaunchKernel(
-        kernel_function_,
-        grid_size, 1, 1,    // Grid dimensions
-        block_size, 1, 1,   // Block dimensions
-        config_.shared_memory_size,  // Shared memory (configurable)
-        stream,             // Stream
-        kernel_args,        // Parameters
-        nullptr             // Extra
-    );
-    
-    if (cu_result != CUDA_SUCCESS) {
-        return ProcessingResult::KernelError;
-    }
-    
-    // Copy results back to host asynchronously
-    result = cudaMemcpyAsync(events_buffer, device_buffer_, buffer_size,
-                          cudaMemcpyDeviceToHost, stream);
-    if (result != cudaSuccess) {
-        return ProcessingResult::DeviceError;
-    }
-    
-    // If we have a callback and we're in async mode, set up the callback
-    if (is_async && config_.default_callback) {
-        // Create a batch object to pass to the callback
-        EventBatch* batch = new EventBatch(
-            events_buffer,
-            buffer_size,
-            event_count,
-            config_.default_callback,
-            stream,
-            false  // doesn't own the memory
+    // For a single small batch, optimize by avoiding overhead
+    if (num_batches == 1) {
+        // Process all events in one go for maximum performance
+        // Ensure the device buffer is large enough
+        ProcessingResult buffer_result = ensure_buffer_size(buffer_size);
+        if (buffer_result != ProcessingResult::Success) {
+            return ProcessingResult::DeviceError;
+        }
+        
+        // Get a stream for this operation
+        cudaStream_t stream = get_available_stream();
+        
+        // Transfer data to device asynchronously
+        cudaError_t result = cudaMemcpyAsync(device_buffer_, events_buffer, buffer_size, 
+                               cudaMemcpyHostToDevice, stream);
+        if (result != cudaSuccess) {
+            return ProcessingResult::DeviceError;
+        }
+        
+        // Launch kernel with all events
+        void* kernel_args[] = {
+            &device_buffer_,
+            &event_count
+        };
+        
+        // Calculate grid and block dimensions using config values
+        int block_size = config_.block_size;
+        int grid_size = (event_count + block_size - 1) / block_size;
+        
+        // Apply max grid size limit if configured
+        if (config_.max_grid_size > 0 && grid_size > config_.max_grid_size) {
+            grid_size = config_.max_grid_size;
+        }
+        
+        // Launch kernel asynchronously using the CUDA driver API
+        CUresult cu_result = cuLaunchKernel(
+            kernel_function_,
+            grid_size, 1, 1,    // Grid dimensions
+            block_size, 1, 1,   // Block dimensions
+            config_.shared_memory_size,  // Shared memory (configurable)
+            stream,             // Stream
+            kernel_args,        // Parameters
+            nullptr             // Extra
         );
         
-        // Register callback
-        result = cudaStreamAddCallback(stream, batch_completion_callback, batch, 0);
+        if (cu_result != CUDA_SUCCESS) {
+            return ProcessingResult::KernelError;
+        }
+        
+        // Copy results back to host asynchronously
+        result = cudaMemcpyAsync(events_buffer, device_buffer_, buffer_size,
+                               cudaMemcpyDeviceToHost, stream);
         if (result != cudaSuccess) {
-            delete batch;
             return ProcessingResult::DeviceError;
         }
-    } 
-    // If not async, we need to synchronize before returning
-    else if (!is_async) {
+        
         // For synchronous operation, wait for everything to complete
-        result = cudaStreamSynchronize(stream);
-        if (result != cudaSuccess) {
-            return ProcessingResult::DeviceError;
+        if (!is_async) {
+            result = cudaStreamSynchronize(stream);
+            if (result != cudaSuccess) {
+                return ProcessingResult::DeviceError;
+            }
         }
     }
-    // If async but no callback, we just return (operations continue in background)
+    else {
+        // Process in multiple batches for better performance
+        // Calculate size of each event for offset calculations
+        size_t event_size = buffer_size / event_count;
+        
+        // Prefetch device buffer size to avoid repeated reallocation
+        size_t max_batch_bytes = batch_size * event_size;
+        ProcessingResult buffer_result = ensure_buffer_size(max_batch_bytes);
+        if (buffer_result != ProcessingResult::Success) {
+            return ProcessingResult::DeviceError;
+        }
+        
+        // Determine optimal number of concurrent streams based on hardware
+        int stream_count = std::min(static_cast<int>(num_batches), config_.max_stream_count);
+        if (stream_count <= 0) stream_count = 1;
+        
+        // Track streams used for each batch for synchronization
+        std::vector<cudaStream_t> active_streams;
+        active_streams.reserve(stream_count);
+        
+        // Process each batch, reusing streams in a round-robin fashion
+        for (size_t batch = 0; batch < num_batches; batch++) {
+            // Calculate the offset and size for this batch
+            size_t offset = batch * batch_size;
+            size_t current_batch_events = std::min(batch_size, event_count - offset);
+            size_t current_batch_size = current_batch_events * event_size;
+            
+            // Calculate pointer to current batch
+            char* batch_buffer = static_cast<char*>(events_buffer) + (offset * event_size);
+            
+            // Get a stream for this batch
+            cudaStream_t stream = get_available_stream();
+            
+            // If we're at the stream limit, track the stream for synchronization
+            if (active_streams.size() < stream_count) {
+                active_streams.push_back(stream);
+            }
+            
+            // Transfer data to device asynchronously
+            cudaError_t result = cudaMemcpyAsync(device_buffer_, batch_buffer, current_batch_size, 
+                                cudaMemcpyHostToDevice, stream);
+            if (result != cudaSuccess) {
+                return ProcessingResult::DeviceError;
+            }
+            
+            // Launch kernel for this batch
+            void* kernel_args[] = {
+                &device_buffer_,
+                &current_batch_events
+            };
+            
+            // Calculate grid and block dimensions using config values
+            int block_size = config_.block_size;
+            int grid_size = (current_batch_events + block_size - 1) / block_size;
+            
+            // Apply max grid size limit if configured
+            if (config_.max_grid_size > 0 && grid_size > config_.max_grid_size) {
+                grid_size = config_.max_grid_size;
+            }
+            
+            // Launch kernel asynchronously using the CUDA driver API
+            CUresult cu_result = cuLaunchKernel(
+                kernel_function_,
+                grid_size, 1, 1,    // Grid dimensions
+                block_size, 1, 1,   // Block dimensions
+                config_.shared_memory_size,  // Shared memory (configurable)
+                stream,             // Stream
+                kernel_args,        // Parameters
+                nullptr             // Extra
+            );
+            
+            if (cu_result != CUDA_SUCCESS) {
+                return ProcessingResult::KernelError;
+            }
+            
+            // Copy results back to host asynchronously
+            result = cudaMemcpyAsync(batch_buffer, device_buffer_, current_batch_size,
+                                cudaMemcpyDeviceToHost, stream);
+            if (result != cudaSuccess) {
+                return ProcessingResult::DeviceError;
+            }
+            
+            // When we reach the stream limit or the last batch, synchronize on the oldest stream
+            // This creates a pipeline effect where we keep N streams running concurrently
+            if (!is_async && (active_streams.size() >= stream_count || batch == num_batches - 1)) {
+                // Synchronize on the oldest stream if we've reached our concurrency limit
+                cudaStream_t oldest_stream = active_streams[0];
+                result = cudaStreamSynchronize(oldest_stream);
+                if (result != cudaSuccess) {
+                    return ProcessingResult::DeviceError;
+                }
+                
+                // Remove this stream from our active set (it can be reused)
+                active_streams.erase(active_streams.begin());
+            }
+        }
+        
+        // If the overall operation is synchronous, ensure all remaining streams are synchronized
+        if (!is_async && !active_streams.empty()) {
+            for (auto& stream : active_streams) {
+                cudaError_t result = cudaStreamSynchronize(stream);
+                if (result != cudaSuccess) {
+                    return ProcessingResult::DeviceError;
+                }
+            }
+        }
+    }
     
     return ProcessingResult::Success;
 }
@@ -498,109 +593,6 @@ void EventProcessor::Impl::cleanup_streams() {
     
     // Clear the vector
     cuda_streams_.clear();
-}
-
-// Static callback function for batch completion
-void CUDART_CB EventProcessor::Impl::batch_completion_callback(cudaStream_t stream, cudaError_t status, void* user_data) {
-    // Cast the user data back to the batch
-    EventBatch* batch = static_cast<EventBatch*>(user_data);
-    
-    if (!batch) {
-        return;
-    }
-    
-    // Prepare result status
-    ProcessingResult result = (status == cudaSuccess) ? 
-                             ProcessingResult::Success : ProcessingResult::DeviceError;
-    
-    // Call the user's callback if provided
-    if (batch->callback) {
-        batch->callback(result, batch->data, batch->size);
-    }
-    
-    // Free any device buffer owned by this batch - no longer needed since we're using ensure_buffer_size
-    // Note: We keep this code but comment it out for reference, in case we need to revert to per-batch buffers
-    /*
-    if (batch->owns_buffer && batch->device_buffer) {
-        cudaFree(batch->device_buffer);
-    }
-    */
-    
-    // If the batch owns the memory, free it
-    if (batch->owns_memory && batch->data) {
-        cudaFreeHost(batch->data);
-    }
-    
-    // Delete the batch object that was dynamically allocated
-    delete batch;
-}
-
-ProcessingResult EventProcessor::Impl::process_batch_internal(const EventBatch& batch) {
-    if (!is_ready()) {
-        return ProcessingResult::KernelError;
-    }
-    
-    if (!batch.data || batch.size == 0 || batch.count == 0) {
-        return ProcessingResult::InvalidInput;
-    }
-    
-    // Use ensure_context_current instead of direct context setting
-    ProcessingResult ctx_result = ensure_context_current();
-    if (ctx_result != ProcessingResult::Success) {
-        return ProcessingResult::DeviceError;
-    }
-    
-    // Use existing buffer and ensure it's large enough
-    ProcessingResult buffer_result = ensure_buffer_size(batch.size);
-    if (buffer_result != ProcessingResult::Success) {
-        return ProcessingResult::DeviceError;
-    }
-    
-    // Copy data to device asynchronously using the provided stream
-    cudaError_t result = cudaMemcpyAsync(device_buffer_, batch.data, batch.size, 
-                           cudaMemcpyHostToDevice, batch.stream);
-    if (result != cudaSuccess) {
-        return ProcessingResult::DeviceError;
-    }
-    
-    // Set up kernel parameters
-    void* args[] = {
-        &device_buffer_,
-        (void*)&batch.count
-    };
-    
-    // Calculate grid and block dimensions using config values
-    int block_size = config_.block_size;
-    int grid_size = (batch.count + block_size - 1) / block_size;
-    
-    // Apply max grid size limit if configured
-    if (config_.max_grid_size > 0 && grid_size > config_.max_grid_size) {
-        grid_size = config_.max_grid_size;
-    }
-    
-    // Launch kernel asynchronously
-    CUresult cu_result = cuLaunchKernel(
-        kernel_function_,
-        grid_size, 1, 1,    // Grid dimensions
-        block_size, 1, 1,   // Block dimensions
-        config_.shared_memory_size,  // Shared memory (configurable)
-        batch.stream,       // Use the provided stream
-        args,               // Parameters
-        nullptr             // Extra
-    );
-    
-    if (cu_result != CUDA_SUCCESS) {
-        return ProcessingResult::KernelError;
-    }
-    
-    // Copy results back to host asynchronously
-    result = cudaMemcpyAsync(batch.data, device_buffer_, batch.size,
-                           cudaMemcpyDeviceToHost, batch.stream);
-    if (result != cudaSuccess) {
-        return ProcessingResult::DeviceError;
-    }
-    
-    return ProcessingResult::Success;
 }
 
 // Implementation of the synchronize_async_operations method

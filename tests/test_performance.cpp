@@ -115,15 +115,6 @@ void run_benchmark(const std::string& name, EventProcessor& processor,
     REQUIRE(validate_results(events));
 }
 
-// Global variables for batch tests
-std::atomic<int> completion_count(0);
-
-// Callback for batch processing
-void batch_complete_callback(ProcessingResult result, void* data, size_t size) {
-    // Just increment the counter with relaxed memory ordering
-    completion_count.fetch_add(1, std::memory_order_relaxed);
-}
-
 TEST_CASE("Performance - Basic Operations", "[performance][benchmark]") {
     auto devices = get_available_devices();
     if (devices.empty()) {
@@ -397,7 +388,7 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
         SKIP("PTX file not found for performance testing");
     }
     
-    // Setup processor
+    // Setup processor with default config first
     EventProcessor::Config config;
     config.enable_profiling = true;
     config.max_stream_count = 4; // Use 4 CUDA streams
@@ -412,70 +403,124 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
     create_test_events(events);
     size_t buffer_size = events.size() * sizeof(NetworkEvent);
                 
-    // Register the buffer as pinned memory
+    // Register the buffer as pinned memory for maximum performance - only once
     ProcessingResult register_result = processor.register_host_buffer(events.data(), buffer_size);
     REQUIRE(register_result == ProcessingResult::Success);
     
-    SECTION("Comparison: Async Batch vs Sync Processing") {
-        // First, do a standard synchronous batch process as baseline
+    SECTION("Comparison: Sync vs Async Processing") {
+        // Test synchronous vs asynchronous processing
         reset_event_actions(events);
         
-        BENCHMARK_ADVANCED("Baseline - events synchronous")(Catch::Benchmark::Chronometer meter) {
+        // Benchmark synchronous processing first
+        BENCHMARK_ADVANCED("Sync processing - 1M events")(Catch::Benchmark::Chronometer meter) {
             meter.measure([&] {
-                size_t total_size = events.size() * sizeof(NetworkEvent);
-                return processor.process_events(events.data(), total_size, events.size());
+                return processor.process_events(events.data(), buffer_size, events.size(), false);
             });
         };
         
-        // Ensure events were processed
+        // Ensure events were processed correctly
         REQUIRE(validate_results(events));
         
-        // Then, do async batch processing
+        // Now benchmark asynchronous processing
         reset_event_actions(events);
         
-        // Set the default callback in the config
-        config.default_callback = batch_complete_callback;
-     
-        const size_t batch_size = test_config::batch_size;
-        const size_t num_batches = total_events / batch_size;
-        
-        BENCHMARK_ADVANCED("Batch async - comparison")(Catch::Benchmark::Chronometer meter) {
+        BENCHMARK_ADVANCED("Async processing - 1M events")(Catch::Benchmark::Chronometer meter) {
             meter.measure([&] {
-                // Reset counter for each measurement
-                completion_count.store(0, std::memory_order_relaxed);
+                // Start asynchronous processing
+                ProcessingResult async_result = processor.process_events(
+                    events.data(), 
+                    buffer_size, 
+                    events.size(),
+                    true  // is_async
+                );
+                REQUIRE(async_result == ProcessingResult::Success);
                 
-                // Submit all batches
-                for (size_t i = 0; i < num_batches; i++) {
-                    void* batch_start = &events[i * batch_size];
-                    size_t batch_size_bytes = batch_size * sizeof(NetworkEvent);
-                    
-                    processor.process_events(
-                        batch_start, 
-                        batch_size_bytes, 
-                        batch_size,
-                        true  // is_async
-                    );
-                }
-
-                // Synchronize the async operations
+                // Synchronize to ensure completion for benchmarking
                 ProcessingResult sync_result = processor.synchronize_async_operations();
                 REQUIRE(sync_result == ProcessingResult::Success);
                 
-                // Wait for all batches to complete using busy-wait on the atomic counter
-                // This avoids the mutex/condition variable overhead
-                //while (completion_count.load(std::memory_order_acquire) < num_batches) {
-                    // Small delay to reduce CPU usage while spinning
-                    // std::this_thread::yield();
-                    // spin 
-                //}
-                
-                // Return number of completed batches
-                return num_batches;
+                return async_result;
             });
         };
-
-        // Validate results
+        
+        // Verify asynchronous processing results
         REQUIRE(validate_results(events));
+    }
+    
+    SECTION("Comparison: Different Batch Sizes") {
+        // Test different batch sizes with new batching algorithm
+        std::vector<size_t> batch_sizes = {1000, 10000, 50000, 100000, 250000, 500000, 1000000};
+        
+        // Save original config
+        EventProcessor::Config original_config = config;
+        
+        for (size_t test_batch_size : batch_sizes) {
+            // Update the batch size in the existing processor's config
+            config.max_batch_size = test_batch_size;
+            
+            // Update processor with new config
+            processor = EventProcessor(config);
+            ProcessingResult batch_load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+            REQUIRE(batch_load_result == ProcessingResult::Success);
+            
+            // Reset event states for this test
+            reset_event_actions(events);
+            
+            // Create benchmark name
+            std::string benchmark_name = "Batch size: " + format_size(test_batch_size);
+            
+            // Run benchmark
+            BENCHMARK_ADVANCED(benchmark_name.c_str())(Catch::Benchmark::Chronometer meter) {
+                meter.measure([&] {
+                    // Process all events in one call, but with batching controlled by max_batch_size
+                    return processor.process_events(events.data(), buffer_size, events.size());
+                });
+            };
+        }
+        
+        // Restore original config
+        processor = EventProcessor(original_config);
+        ProcessingResult restore_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+        REQUIRE(restore_result == ProcessingResult::Success);
+    }
+    
+    SECTION("Comparison: Batch Size vs Stream Count") {
+        // Fix batch size but vary stream count
+        const size_t fixed_batch_size = 250000; // A moderate batch size that works well
+        std::vector<int> stream_counts = {1, 2, 4, 8, 16};
+        
+        // Save original config
+        EventProcessor::Config original_config = config;
+        
+        for (int stream_count : stream_counts) {
+            // Update config with fixed batch size but different stream count
+            config.max_batch_size = fixed_batch_size;
+            config.max_stream_count = stream_count;
+            
+            // Recreate processor with new config
+            processor = EventProcessor(config);
+            ProcessingResult stream_load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+            REQUIRE(stream_load_result == ProcessingResult::Success);
+            
+            // Reset event states for this test
+            reset_event_actions(events);
+            
+            // Create benchmark name
+            std::string benchmark_name = "Streams: " + std::to_string(stream_count) + ", Batch: " + format_size(fixed_batch_size);
+            
+            // Run benchmark
+            BENCHMARK_ADVANCED(benchmark_name.c_str())(Catch::Benchmark::Chronometer meter) {
+                meter.measure([&] {
+                    // Process all events in one call
+                    return processor.process_events(events.data(), buffer_size, events.size());
+                });
+            };
+        }
+        
+        // Restore original config
+        processor = EventProcessor(original_config);
+        ProcessingResult restore_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+        REQUIRE(restore_result == ProcessingResult::Success);
     }
 }
 
