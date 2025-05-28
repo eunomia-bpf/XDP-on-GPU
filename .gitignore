@@ -32,3 +32,4 @@
 *.app
 build/
 test_kernels.ptx
+/Testing

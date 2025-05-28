@@ -24,18 +24,18 @@ TEST_CASE("Integration - Complete Workflow", "[integration]") {
         
         // Load a simple kernel
         KernelLoader loader;
-        std::string simple_ptx = R"(
-.version 7.0
-.target sm_61
-.address_size 64
-
-.visible .entry integration_test_kernel(
-    .param .u64 integration_test_kernel_param_0
-)
-{
-    ret;
-}
-)";
+        // Create PTX with auto-detected architecture
+        std::string simple_ptx = 
+            ".version 7.0\n"
+            ".target sm_" + std::to_string(CUDA_ARCH_SM) + "\n"
+            ".address_size 64\n"
+            "\n"
+            ".visible .entry integration_test_kernel(\n"
+            "    .param .u64 integration_test_kernel_param_0\n"
+            ")\n"
+            "{\n"
+            "    ret;\n"
+            "}\n";
         
         REQUIRE(KernelLoader::validate_ptx(simple_ptx));
         

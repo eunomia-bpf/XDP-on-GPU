@@ -20,14 +20,17 @@ file(MAKE_DIRECTORY ${PTX_OUTPUT_DIR})
 set(CUDA_KERNEL_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cuda_kernels.cu")
 set(PTX_OUTPUT_FILE "${PTX_OUTPUT_DIR}/cuda_kernels.ptx")
 
+# Get the first detected CUDA architecture for PTX generation
+list(GET CMAKE_CUDA_ARCHITECTURES 0 PTX_ARCH)
+
 # Custom command to generate PTX
 add_custom_command(
     OUTPUT ${PTX_OUTPUT_FILE}
-    COMMAND ${CMAKE_CUDA_COMPILER} -ptx -arch=sm_61 
+    COMMAND ${CMAKE_CUDA_COMPILER} -ptx -arch=sm_${PTX_ARCH}
             ${CUDA_KERNEL_FILE} -o ${PTX_OUTPUT_FILE}
             -I${CMAKE_SOURCE_DIR}/include
     DEPENDS ${CUDA_KERNEL_FILE}
-    COMMENT "Generating PTX from CUDA kernels"
+    COMMENT "Generating PTX from CUDA kernels for architecture sm_${PTX_ARCH}"
 )
 
 # Create a target for PTX generation
@@ -57,10 +60,11 @@ target_link_libraries(test_basic
     Catch2::Catch2WithMain
 )
 
-# Add dependency on PTX generation and pass PTX path as compile definition
+# Add dependency on PTX generation and pass PTX path and architecture as compile definitions
 add_dependencies(test_basic generate_ptx)
 target_compile_definitions(test_basic PRIVATE 
     PTX_FILE_PATH="${PTX_OUTPUT_FILE}"
+    CUDA_ARCH_SM=${PTX_ARCH}
 )
 
 # Performance tests
@@ -74,6 +78,10 @@ target_link_libraries(test_performance
     Catch2::Catch2WithMain
 )
 
+target_compile_definitions(test_performance PRIVATE 
+    CUDA_ARCH_SM=${PTX_ARCH}
+)
+
 # Integration tests
 add_executable(test_integration
     test_integration.cpp
@@ -83,6 +91,10 @@ add_executable(test_integration
 target_link_libraries(test_integration 
     ebpf_gpu_processor
     Catch2::Catch2WithMain
+)
+
+target_compile_definitions(test_integration PRIVATE 
+    CUDA_ARCH_SM=${PTX_ARCH}
 )
 
 # Legacy C API tests
