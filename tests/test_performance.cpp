@@ -182,6 +182,30 @@ TEST_CASE("Performance - Scaling Test", "[performance][benchmark]") {
         REQUIRE(final_result == ProcessingResult::Success);
         REQUIRE(validate_results(events));
     }
+
+    // Test 1M events
+    {
+        std::vector<NetworkEvent> events(1000000);
+        create_test_events(events);
+        size_t buffer_size = events.size() * sizeof(NetworkEvent);
+        
+        // Warm up
+        reset_event_actions(events);
+        processor.process_events(events.data(), buffer_size, events.size());
+
+        BENCHMARK_ADVANCED("Scaling - 1M events")(Catch::Benchmark::Chronometer meter) {
+            reset_event_actions(events);
+            meter.measure([&] {
+                return processor.process_events(events.data(), buffer_size, events.size());
+            });
+        };
+
+        // Validate after benchmark
+        reset_event_actions(events);
+        ProcessingResult final_result = processor.process_events(events.data(), buffer_size, events.size());
+        REQUIRE(final_result == ProcessingResult::Success);
+        REQUIRE(validate_results(events));
+    }
 }
 
 TEST_CASE("Performance - Single vs Multiple Events", "[performance][benchmark]") {
@@ -347,44 +371,4 @@ TEST_CASE("Performance - Memory Transfer vs Compute", "[performance][benchmark]"
             });
         };
     }
-}
-
-TEST_CASE("Performance - Throughput Measurement", "[performance][benchmark]") {
-    auto devices = get_available_devices();
-    if (devices.empty()) {
-        SKIP("No CUDA devices available for performance testing");
-    }
-    
-    const char* ptx_code = get_test_ptx();
-    if (!ptx_code) {
-        SKIP("PTX file not found for performance testing");
-    }
-    
-    EventProcessor processor;
-    processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
-    
-    // Large batch for throughput testing
-    const size_t large_batch = 1000000; // 1M events
-    std::vector<NetworkEvent> events(large_batch);
-    create_test_events(events);
-    
-    // Warm up
-    reset_event_actions(events);
-    size_t buffer_size = events.size() * sizeof(NetworkEvent);
-    processor.process_events(events.data(), buffer_size, events.size());
-    
-    BENCHMARK_ADVANCED("Throughput - 1M events")(Catch::Benchmark::Chronometer meter) {
-        reset_event_actions(events);
-        
-        meter.measure([&] {
-            return processor.process_events(events.data(), buffer_size, events.size());
-        });
-    };
-    
-    // Validate after benchmark
-    reset_event_actions(events);
-    ProcessingResult final_result = processor.process_events(events.data(), buffer_size, events.size());
-    REQUIRE(final_result == ProcessingResult::Success);
-    // Check a sample to avoid validating 100K events
-    REQUIRE(validate_results(std::vector<NetworkEvent>(events.begin(), events.begin() + 1000)));
 }

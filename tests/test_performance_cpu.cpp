@@ -145,7 +145,7 @@ TEST_CASE("Performance - Multiple Filter Comparison", "[performance][filters][be
         kernel_names::COMPLEX_FILTER
     };
     
-    const size_t event_count = 1000;
+    const size_t event_count = 1000 * 1000;
     
     for (const char* kernel_name : test_kernels) {
         // Get corresponding CPU function
@@ -207,40 +207,3 @@ TEST_CASE("Performance - Multiple Filter Comparison", "[performance][filters][be
         REQUIRE(mismatch_rate < 0.05);
     }
 }
-
-TEST_CASE("Performance - CPU Only Benchmarks", "[performance][cpu][benchmark]") {
-    // Test different filter types on CPU only
-    const std::vector<const char*> test_kernels = {
-        kernel_names::SIMPLE_PACKET_FILTER,
-        kernel_names::PORT_BASED_FILTER,
-        kernel_names::MINIMAL_FILTER,
-        kernel_names::COMPLEX_FILTER
-    };
-    
-    const std::vector<size_t> event_counts = {100, 1000, 10000, 100000};
-    
-    for (const char* kernel_name : test_kernels) {
-        cpu::FilterFunction cpu_function = cpu::get_cpu_function_by_name(kernel_name);
-        const char* function_name = cpu::get_function_display_name(kernel_name);
-        
-        for (size_t event_count : event_counts) {
-            std::vector<NetworkEvent> cpu_events(event_count);
-            create_test_events_cpu(cpu_events);
-            
-            std::string test_name = "CPU " + std::string(function_name) + " - " + std::to_string(event_count) + " events";
-            
-            BENCHMARK_ADVANCED(test_name.c_str())(Catch::Benchmark::Chronometer meter) {
-                meter.measure([&] {
-                    reset_event_actions_cpu(cpu_events);
-                    cpu_function(cpu_events.data(), cpu_events.size());
-                    return cpu_events.size();
-                });
-            };
-            
-            // Validate results
-            reset_event_actions_cpu(cpu_events);
-            cpu_function(cpu_events.data(), cpu_events.size());
-            REQUIRE(validate_results_cpu(cpu_events));
-        }
-    }
-} 

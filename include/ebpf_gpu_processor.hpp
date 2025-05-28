@@ -29,7 +29,19 @@ public:
         bool enable_profiling;
         bool use_unified_memory;
         
-        Config() : device_id(-1), buffer_size(1024 * 1024), enable_profiling(false), use_unified_memory(false) {}
+        // Kernel launch configuration
+        int block_size;  // CUDA block size (threads per block)
+        size_t shared_memory_size;  // Shared memory per block in bytes
+        int max_grid_size;  // Maximum grid size (0 for unlimited)
+        
+        Config() : device_id(-1), 
+                  buffer_size(1024 * 1024), 
+                  enable_profiling(false), 
+                  use_unified_memory(false),
+                  block_size(256),  // Good default for most GPUs
+                  shared_memory_size(0),  // No shared memory by default
+                  max_grid_size(65535)  // CUDA maximum grid dimension
+        {}
     };
 
     explicit EventProcessor(const Config& config = Config{});

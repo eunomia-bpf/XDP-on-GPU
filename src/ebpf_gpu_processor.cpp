@@ -64,6 +64,15 @@ EventProcessor::Impl::~Impl() {
 void EventProcessor::Impl::initialize_device() {
     device_id_ = config_.device_id;
     
+    // Validate kernel launch configuration
+    if (config_.block_size <= 0 || config_.block_size > 1024) {
+        throw std::runtime_error("Invalid block size: must be between 1 and 1024");
+    }
+    
+    if (config_.max_grid_size < 0) {
+        throw std::runtime_error("Invalid max grid size: must be non-negative");
+    }
+    
     if (device_id_ < 0) {
         device_id_ = device_manager_.select_best_device();
     }
@@ -241,16 +250,21 @@ ProcessingResult EventProcessor::Impl::launch_kernel(void* device_data, size_t e
         &event_count
     };
     
-    // Calculate grid and block dimensions
-    int block_size = 256;
+    // Calculate grid and block dimensions using config values
+    int block_size = config_.block_size;
     int grid_size = (event_count + block_size - 1) / block_size;
+    
+    // Apply max grid size limit if configured
+    if (config_.max_grid_size > 0 && grid_size > config_.max_grid_size) {
+        grid_size = config_.max_grid_size;
+    }
     
     // Launch kernel
     result = cuLaunchKernel(
         kernel_function_,
         grid_size, 1, 1,    // Grid dimensions
         block_size, 1, 1,   // Block dimensions
-        0,                  // Shared memory
+        config_.shared_memory_size,  // Shared memory (configurable)
         0,                  // Stream
         args,               // Parameters
         nullptr             // Extra
