@@ -1,4 +1,5 @@
 #include "ebpf_gpu_processor.hpp"
+#include "test_utils.hpp"
 #include <iostream>
 #include <cstdio>
 #include <cstdlib>
@@ -8,39 +9,6 @@
 
 using namespace std;
 using namespace ebpf_gpu;
-
-// Load PTX from pre-generated file
-const char* get_ptx_code() {
-    static char* ptx_code = nullptr;
-    if (ptx_code) return ptx_code;
-    
-#ifdef PTX_FILE_PATH
-    const char* ptx_path = PTX_FILE_PATH;
-#else
-    const char* ptx_path = "cuda_kernels.ptx";
-#endif
-    
-    cout << "Loading PTX from: " << ptx_path << endl;
-    
-    // Read the pre-generated PTX file
-    FILE* file = fopen(ptx_path, "r");
-    if (!file) {
-        cout << "Error: Could not open PTX file: " << ptx_path << endl;
-        return nullptr;
-    }
-    
-    fseek(file, 0, SEEK_END);
-    long size = ftell(file);
-    fseek(file, 0, SEEK_SET);
-    
-    ptx_code = (char*)malloc(size + 1);
-    fread(ptx_code, 1, size, file);
-    ptx_code[size] = '\0';
-    fclose(file);
-    
-    cout << "PTX loaded successfully!" << endl;
-    return ptx_code;
-}
 
 void print_event(const NetworkEvent& event, int index) {
     cout << "Event " << index << ":" << endl;
@@ -93,7 +61,7 @@ int test_cpp_api() {
         EventProcessor processor(config);
         
         // Get PTX code
-        const char* ptx_code = get_ptx_code();
+        const char* ptx_code = get_test_ptx();
         if (!ptx_code) {
             cout << "Failed to load PTX code" << endl;
             return -1;
@@ -146,7 +114,7 @@ int test_buffer_interface() {
         EventProcessor processor;
         
         // Get PTX code
-        const char* ptx_code = get_ptx_code();
+        const char* ptx_code = get_test_ptx();
         if (!ptx_code) {
             cout << "Failed to load PTX code" << endl;
             return -1;
