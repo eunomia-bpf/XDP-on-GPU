@@ -1,6 +1,8 @@
 #include "ebpf_gpu_processor_impl.hpp"
 #include <stdexcept>
 #include <cstring>
+#include <algorithm>
+#include <functional>
 
 namespace ebpf_gpu {
 
@@ -370,7 +372,209 @@ bool EventProcessor::is_ready() const {
     return pimpl_->is_ready();
 }
 
-// Static utility functions for pinned memory management
+// Initialize CUDA streams for async operations
+void EventProcessor::Impl::initialize_streams() {
+    // Clean up any existing streams first
+    cleanup_streams();
+    
+    int num_streams = config_.max_stream_count;
+    if (num_streams <= 0) {
+        num_streams = 4;  // Default to 4 streams if not specified
+    }
+    
+    cuda_streams_.resize(num_streams);
+    
+    for (int i = 0; i < num_streams; i++) {
+        cudaError_t result = cudaStreamCreateWithFlags(&cuda_streams_[i], cudaStreamNonBlocking);
+        if (result != cudaSuccess) {
+            cleanup_streams();
+            throw std::runtime_error("Failed to create CUDA streams");
+        }
+    }
+}
+
+void EventProcessor::Impl::cleanup_streams() {
+    for (auto& stream : cuda_streams_) {
+        if (stream) {
+            cudaStreamSynchronize(stream);
+            cudaStreamDestroy(stream);
+            stream = nullptr;
+        }
+    }
+    cuda_streams_.clear();
+}
+
+cudaStream_t EventProcessor::Impl::get_available_stream() {
+    if (cuda_streams_.empty()) {
+        initialize_streams();
+    }
+    
+    // Simple round-robin selection for now
+    // Could be enhanced with stream priority or load balancing
+    static size_t next_stream_index = 0;
+    
+    if (next_stream_index >= cuda_streams_.size()) {
+        next_stream_index = 0;
+    }
+    
+    return cuda_streams_[next_stream_index++];
+}
+
+// Static callback function for batch completion
+void CUDART_CB EventProcessor::Impl::batch_completion_callback(cudaStream_t stream, cudaError_t status, void* user_data) {
+    EventBatch* batch = static_cast<EventBatch*>(user_data);
+    
+    if (batch) {
+        ProcessingResult result = (status == cudaSuccess) ? 
+                                  ProcessingResult::Success : 
+                                  ProcessingResult::DeviceError;
+                                  
+        // Call the user-provided callback with the result
+        if (batch->callback) {
+            batch->callback(result, batch->data, batch->size);
+        }
+        
+        // Free memory if the batch owns it
+        if (batch->owns_memory && batch->data) {
+            cudaFreeHost(batch->data);
+        }
+        
+        // Delete the batch object that was dynamically allocated
+        delete batch;
+    }
+}
+
+ProcessingResult EventProcessor::Impl::process_batch_internal(const EventBatch& batch) {
+    if (!is_ready()) {
+        return ProcessingResult::KernelError;
+    }
+    
+    if (!batch.data || batch.size == 0 || batch.count == 0) {
+        return ProcessingResult::InvalidInput;
+    }
+    
+    // Set current context to ensure we're using the right device
+    CUresult cu_result = cuCtxSetCurrent(context_);
+    if (cu_result != CUDA_SUCCESS) {
+        return ProcessingResult::DeviceError;
+    }
+    
+    // Create a device buffer for this specific batch if needed
+    void* batch_device_buffer = nullptr;
+    cudaError_t result = cudaMalloc(&batch_device_buffer, batch.size);
+    if (result != cudaSuccess) {
+        return ProcessingResult::DeviceError;
+    }
+    
+    // Copy data to device asynchronously using the provided stream
+    result = cudaMemcpyAsync(batch_device_buffer, batch.data, batch.size, 
+                           cudaMemcpyHostToDevice, batch.stream);
+    if (result != cudaSuccess) {
+        cudaFree(batch_device_buffer);
+        return ProcessingResult::DeviceError;
+    }
+    
+    // Set up kernel parameters
+    void* args[] = {
+        &batch_device_buffer,
+        (void*)&batch.count
+    };
+    
+    // Calculate grid and block dimensions using config values
+    int block_size = config_.block_size;
+    int grid_size = (batch.count + block_size - 1) / block_size;
+    
+    // Apply max grid size limit if configured
+    if (config_.max_grid_size > 0 && grid_size > config_.max_grid_size) {
+        grid_size = config_.max_grid_size;
+    }
+    
+    // Launch kernel asynchronously
+    cu_result = cuLaunchKernel(
+        kernel_function_,
+        grid_size, 1, 1,    // Grid dimensions
+        block_size, 1, 1,   // Block dimensions
+        config_.shared_memory_size,  // Shared memory (configurable)
+        batch.stream,       // Use the provided stream
+        args,               // Parameters
+        nullptr             // Extra
+    );
+    
+    if (cu_result != CUDA_SUCCESS) {
+        cudaFree(batch_device_buffer);
+        return ProcessingResult::KernelError;
+    }
+    
+    // Copy results back to host asynchronously
+    result = cudaMemcpyAsync(batch.data, batch_device_buffer, batch.size,
+                           cudaMemcpyDeviceToHost, batch.stream);
+    if (result != cudaSuccess) {
+        cudaFree(batch_device_buffer);
+        return ProcessingResult::DeviceError;
+    }
+    
+    // Schedule cleanup of device memory after all operations complete
+    result = cudaStreamAddCallback(batch.stream, [](cudaStream_t stream, cudaError_t status, void* userData) {
+        void* buffer = static_cast<void*>(userData);
+        cudaFree(buffer);
+    }, batch_device_buffer, 0);
+    
+    if (result != cudaSuccess) {
+        // If we can't add the callback, free the memory now
+        cudaFree(batch_device_buffer);
+    }
+    
+    return ProcessingResult::Success;
+}
+
+ProcessingResult EventProcessor::Impl::process_batch_async(void* events_buffer, size_t buffer_size, size_t event_count,
+                                                     EventProcessingCallback callback) {
+    if (!is_ready()) {
+        return ProcessingResult::KernelError;
+    }
+    
+    if (!events_buffer || buffer_size == 0 || event_count == 0) {
+        return ProcessingResult::InvalidInput;
+    }
+    
+    // Create a cuda stream for this batch
+    cudaStream_t stream = get_available_stream();
+    
+    // Create a batch object to pass to the callback
+    // This needs to be dynamically allocated since it will be accessed after this function returns
+    EventBatch* batch = new EventBatch{
+        events_buffer,
+        buffer_size,
+        event_count,
+        callback,
+        stream,
+        false  // doesn't own the memory
+    };
+    
+    // Process the batch
+    ProcessingResult result = process_batch_internal(*batch);
+    if (result != ProcessingResult::Success) {
+        delete batch;
+        return result;
+    }
+    
+    // Add a callback to be executed when all operations in the stream complete
+    cudaError_t cuda_result = cudaStreamAddCallback(stream, batch_completion_callback, batch, 0);
+    if (cuda_result != cudaSuccess) {
+        delete batch;
+        return ProcessingResult::DeviceError;
+    }
+    
+    return ProcessingResult::Success;
+}
+
+// EventProcessor public interface implementation
+ProcessingResult EventProcessor::process_batch_async(void* events_buffer, size_t buffer_size, size_t event_count,
+                                               EventProcessingCallback callback) {
+    return pimpl_->process_batch_async(events_buffer, buffer_size, event_count, callback);
+}
+
+// Utility functions for pinned memory management
 void* EventProcessor::allocate_pinned_buffer(size_t size) {
     void* pinned_ptr = nullptr;
     cudaError_t result = cudaMallocHost(&pinned_ptr, size);
@@ -386,7 +590,7 @@ void EventProcessor::free_pinned_buffer(void* pinned_ptr) {
     }
 }
 
-// Static utility functions for registering/unregistering existing host memory
+// Utility functions for registering/unregistering existing host memory
 ProcessingResult EventProcessor::register_host_buffer(void* ptr, size_t size, unsigned int flags) {
     if (!ptr || size == 0) {
         return ProcessingResult::InvalidInput;
@@ -410,7 +614,7 @@ ProcessingResult EventProcessor::unregister_host_buffer(void* ptr) {
     return ProcessingResult::Success;
 }
 
-// Utility functions
+// Global utility functions
 std::vector<GpuDeviceInfo> get_available_devices() {
     static GpuDeviceManager manager; // Use static singleton for consistent device detection
     return manager.get_all_devices();

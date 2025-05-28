@@ -30,6 +30,10 @@ public:
 
     ProcessingResult process_event(void* event_data, size_t event_size);
     ProcessingResult process_events(void* events_buffer, size_t buffer_size, size_t event_count);
+    
+    // Async batch processing
+    ProcessingResult process_batch_async(void* events_buffer, size_t buffer_size, size_t event_count,
+                                        EventProcessingCallback callback);
 
     GpuDeviceInfo get_device_info() const;
     size_t get_available_memory() const;
@@ -45,9 +49,28 @@ private:
     GpuDeviceManager device_manager_;
     int device_id_;
     
+    // Async processing support
+    struct EventBatch {
+        void* data;
+        size_t size;
+        size_t count;
+        EventProcessingCallback callback;
+        cudaStream_t stream;
+        bool owns_memory;  // Whether the batch owns the data buffer
+    };
+    
+    std::vector<cudaStream_t> cuda_streams_;
+    
     void initialize_device();
     ProcessingResult ensure_buffer_size(size_t required_size);
     ProcessingResult launch_kernel(void* device_data, size_t event_count);
+    
+    // Async processing methods
+    void initialize_streams();
+    void cleanup_streams();
+    ProcessingResult process_batch_internal(const EventBatch& batch);
+    cudaStream_t get_available_stream();
+    static void CUDART_CB batch_completion_callback(cudaStream_t stream, cudaError_t status, void* user_data);
 };
 
 } // namespace ebpf_gpu 
