@@ -1,7 +1,5 @@
 #pragma once
 
-#include <cuda.h>
-#include <cuda_runtime.h>
 #include "gpu_device_manager.hpp"
 #include "kernel_loader.hpp"
 #include <memory>
@@ -92,7 +90,19 @@ public:
      */
     ProcessingResult process_event_async(void* events_buffer, size_t buffer_size, size_t event_count,
                                         EventProcessingCallback callback);
-    
+
+    /**
+     * @brief Synchronously wait for all previously submitted async operations to complete
+     * 
+     * This method blocks until all asynchronously submitted operations are complete and
+     * results have been copied back to the host. This provides a simple way to ensure
+     * all pending operations have finished.
+     * 
+     * @return ProcessingResult::Success if all operations completed successfully,
+     *         or an error code if any operation failed
+     */
+    ProcessingResult synchronize_async_operations();
+
     // Utility functions for pinned memory management
     static void* allocate_pinned_buffer(size_t size);
     static void free_pinned_buffer(void* pinned_ptr);

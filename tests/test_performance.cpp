@@ -466,6 +466,9 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
                 return num_batches;
             });
         };
+
+        // Validate results
+        REQUIRE(validate_results(events));
     }
 }
 

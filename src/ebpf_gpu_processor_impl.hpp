@@ -34,6 +34,9 @@ public:
     // Async batch processing
     ProcessingResult process_event_async(void* events_buffer, size_t buffer_size, size_t event_count,
                                         EventProcessingCallback callback);
+    
+    // Synchronization for async operations
+    ProcessingResult synchronize_async_operations();
 
     GpuDeviceInfo get_device_info() const;
     size_t get_available_memory() const;
@@ -57,6 +60,20 @@ private:
         EventProcessingCallback callback;
         cudaStream_t stream;
         bool owns_memory;  // Whether the batch owns the data buffer
+        
+        // New fields for low-latency processing
+        bool owns_buffer;  // Whether this batch owns its device buffer
+        void* device_buffer;  // Device buffer used for this batch (may be different from device_buffer_)
+        
+        // Constructor with default initialization
+        EventBatch() : data(nullptr), size(0), count(0), callback(nullptr), stream(nullptr),
+                      owns_memory(false), owns_buffer(false), device_buffer(nullptr) {}
+        
+        // Constructor with parameters
+        EventBatch(void* _data, size_t _size, size_t _count, EventProcessingCallback _callback,
+                  cudaStream_t _stream, bool _owns_memory) 
+            : data(_data), size(_size), count(_count), callback(_callback), stream(_stream),
+              owns_memory(_owns_memory), owns_buffer(false), device_buffer(nullptr) {}
     };
     
     std::vector<cudaStream_t> cuda_streams_;

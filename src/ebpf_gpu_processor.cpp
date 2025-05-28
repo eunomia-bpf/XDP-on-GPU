@@ -378,76 +378,117 @@ bool EventProcessor::is_ready() const {
     return pimpl_->is_ready();
 }
 
-// Initialize CUDA streams for async operations
+// Initialize CUDA streams for asynchronous processing
 void EventProcessor::Impl::initialize_streams() {
-    // Clean up any existing streams first
+    // Cleanup existing streams first
     cleanup_streams();
     
+    // Determine the number of streams to create
     int num_streams = config_.max_stream_count;
     if (num_streams <= 0) {
-        num_streams = 4;  // Default to 4 streams if not specified
+        // Default to 4 streams if not specified
+        num_streams = 4;
     }
     
+    // Create the streams with priorities when possible
     cuda_streams_.resize(num_streams);
     
+    // Try to create streams with different priorities
+    // Use high priority for the first stream if supported
+    int lowest_priority = 0;
+    int highest_priority = 0;
+    
+    // Get the range of priorities supported by the device
+    cudaDeviceGetStreamPriorityRange(&lowest_priority, &highest_priority);
+    
     for (int i = 0; i < num_streams; i++) {
-        cudaError_t result = cudaStreamCreateWithFlags(&cuda_streams_[i], cudaStreamNonBlocking);
+        // Assign priorities: first stream gets highest priority, rest get normal priority
+        int priority = (i == 0) ? highest_priority : lowest_priority;
+        
+        // Create stream with priority
+        cudaError_t result = cudaStreamCreateWithPriority(&cuda_streams_[i], 
+                                                     cudaStreamNonBlocking, priority);
+        
         if (result != cudaSuccess) {
-            cleanup_streams();
-            throw std::runtime_error("Failed to create CUDA streams");
+            // Fall back to regular stream creation if priority streams fail
+            result = cudaStreamCreate(&cuda_streams_[i]);
+            if (result != cudaSuccess) {
+                // Handle stream creation failure
+                cuda_streams_.resize(i);  // Keep only the successfully created streams
+                break;
+            }
         }
     }
 }
 
-void EventProcessor::Impl::cleanup_streams() {
-    for (auto& stream : cuda_streams_) {
-        if (stream) {
-            cudaStreamSynchronize(stream);
-            cudaStreamDestroy(stream);
-            stream = nullptr;
-        }
-    }
-    cuda_streams_.clear();
-}
-
+// Get an available stream for a new batch of processing
 cudaStream_t EventProcessor::Impl::get_available_stream() {
+    // Simple round-robin stream selection
+    static size_t next_stream_idx = 0;
+    
+    // Handle the case where no streams have been created
     if (cuda_streams_.empty()) {
-        initialize_streams();
+        // Initialize one stream on demand
+        cuda_streams_.resize(1);
+        cudaStreamCreate(&cuda_streams_[0]);
+        return cuda_streams_[0];
     }
     
-    // Simple round-robin selection for now
-    // Could be enhanced with stream priority or load balancing
-    static size_t next_stream_index = 0;
+    // Get the next stream in a round-robin fashion
+    cudaStream_t stream = cuda_streams_[next_stream_idx];
     
-    if (next_stream_index >= cuda_streams_.size()) {
-        next_stream_index = 0;
+    // Update the index for the next call
+    next_stream_idx = (next_stream_idx + 1) % cuda_streams_.size();
+    
+    return stream;
+}
+
+// Cleanup all CUDA streams
+void EventProcessor::Impl::cleanup_streams() {
+    // Synchronize and destroy all streams
+    for (auto& stream : cuda_streams_) {
+        // Make sure all operations in the stream are complete
+        cudaStreamSynchronize(stream);
+        cudaStreamDestroy(stream);
     }
     
-    return cuda_streams_[next_stream_index++];
+    // Clear the vector
+    cuda_streams_.clear();
 }
 
 // Static callback function for batch completion
 void CUDART_CB EventProcessor::Impl::batch_completion_callback(cudaStream_t stream, cudaError_t status, void* user_data) {
+    // Cast the user data back to the batch
     EventBatch* batch = static_cast<EventBatch*>(user_data);
     
-    if (batch) {
-        ProcessingResult result = (status == cudaSuccess) ? 
-                                  ProcessingResult::Success : 
-                                  ProcessingResult::DeviceError;
-                                  
-        // Call the user-provided callback with the result
-        if (batch->callback) {
-            batch->callback(result, batch->data, batch->size);
-        }
-        
-        // Free memory if the batch owns it
-        if (batch->owns_memory && batch->data) {
-            cudaFreeHost(batch->data);
-        }
-        
-        // Delete the batch object that was dynamically allocated
-        delete batch;
+    if (!batch) {
+        return;
     }
+    
+    // Prepare result status
+    ProcessingResult result = (status == cudaSuccess) ? 
+                             ProcessingResult::Success : ProcessingResult::DeviceError;
+    
+    // Call the user's callback if provided
+    if (batch->callback) {
+        batch->callback(result, batch->data, batch->size);
+    }
+    
+    // Free any device buffer owned by this batch - no longer needed since we're using ensure_buffer_size
+    // Note: We keep this code but comment it out for reference, in case we need to revert to per-batch buffers
+    /*
+    if (batch->owns_buffer && batch->device_buffer) {
+        cudaFree(batch->device_buffer);
+    }
+    */
+    
+    // If the batch owns the memory, free it
+    if (batch->owns_memory && batch->data) {
+        cudaFreeHost(batch->data);
+    }
+    
+    // Delete the batch object that was dynamically allocated
+    delete batch;
 }
 
 ProcessingResult EventProcessor::Impl::process_batch_internal(const EventBatch& batch) {
@@ -528,32 +569,110 @@ ProcessingResult EventProcessor::Impl::process_event_async(void* events_buffer, 
         return ProcessingResult::InvalidInput;
     }
     
-    // Create a cuda stream for this batch
+    // Ensure the CUDA context is current
+    ProcessingResult ctx_result = ensure_context_current();
+    if (ctx_result != ProcessingResult::Success) {
+        return ProcessingResult::DeviceError;
+    }
+    
+    // Get a stream for this batch using round-robin scheduling
     cudaStream_t stream = get_available_stream();
     
     // Create a batch object to pass to the callback
-    // This needs to be dynamically allocated since it will be accessed after this function returns
-    EventBatch* batch = new EventBatch{
+    EventBatch* batch = new EventBatch(
         events_buffer,
         buffer_size,
         event_count,
         callback,
         stream,
         false  // doesn't own the memory
+    );
+    
+    // Ensure the device buffer is large enough
+    ProcessingResult buffer_result = ensure_buffer_size(buffer_size);
+    if (buffer_result != ProcessingResult::Success) {
+        delete batch;
+        return ProcessingResult::DeviceError;
+    }
+    
+    // Transfer batch to device asynchronously
+    // This starts the pipeline of operations
+    cudaError_t result = cudaMemcpyAsync(device_buffer_, events_buffer, buffer_size, 
+                           cudaMemcpyHostToDevice, stream);
+    if (result != cudaSuccess) {
+        delete batch;
+        return ProcessingResult::DeviceError;
+    }
+    
+    // Set up kernel parameters
+    void* args[] = {
+        &device_buffer_,  // Use the shared device buffer
+        (void*)&event_count
     };
     
-    // Process the batch
-    ProcessingResult result = process_batch_internal(*batch);
-    if (result != ProcessingResult::Success) {
+    // Calculate grid and block dimensions using config values
+    int block_size = config_.block_size;
+    int grid_size = (event_count + block_size - 1) / block_size;
+    
+    // Apply max grid size limit if configured
+    if (config_.max_grid_size > 0 && grid_size > config_.max_grid_size) {
+        grid_size = config_.max_grid_size;
+    }
+    
+    // Launch kernel asynchronously on the selected stream
+    // This will execute as soon as the memory transfer completes
+    CUresult cu_result = cuLaunchKernel(
+        kernel_function_,
+        grid_size, 1, 1,    // Grid dimensions
+        block_size, 1, 1,   // Block dimensions
+        config_.shared_memory_size,  // Shared memory (configurable)
+        stream,             // Use the selected stream
+        args,               // Parameters
+        nullptr             // Extra
+    );
+    
+    if (cu_result != CUDA_SUCCESS) {
         delete batch;
-        return result;
+        return ProcessingResult::KernelError;
+    }
+    
+    // Copy results back to host asynchronously (still in the same stream)
+    // This will execute after the kernel completes
+    result = cudaMemcpyAsync(events_buffer, device_buffer_, buffer_size,
+                           cudaMemcpyDeviceToHost, stream);
+    if (result != cudaSuccess) {
+        delete batch;
+        return ProcessingResult::DeviceError;
     }
     
     // Add a callback to be executed when all operations in the stream complete
-    cudaError_t cuda_result = cudaStreamAddCallback(stream, batch_completion_callback, batch, 0);
-    if (cuda_result != cudaSuccess) {
+    result = cudaStreamAddCallback(stream, batch_completion_callback, batch, 0);
+    if (result != cudaSuccess) {
         delete batch;
         return ProcessingResult::DeviceError;
+    }
+    
+    return ProcessingResult::Success;
+}
+
+// Implementation of the synchronize_async_operations method
+ProcessingResult EventProcessor::Impl::synchronize_async_operations() {
+    if (!is_ready()) {
+        return ProcessingResult::KernelError;
+    }
+    
+    // Ensure the CUDA context is current
+    ProcessingResult ctx_result = ensure_context_current();
+    if (ctx_result != ProcessingResult::Success) {
+        return ProcessingResult::DeviceError;
+    }
+    
+    // Synchronize all streams
+    for (auto& stream : cuda_streams_) {
+        cudaError_t result = cudaStreamSynchronize(stream);
+        if (result != cudaSuccess) {
+            return ProcessingResult::DeviceError;
+        }
     }
     
     return ProcessingResult::Success;
@@ -563,6 +682,11 @@ ProcessingResult EventProcessor::Impl::process_event_async(void* events_buffer, 
 ProcessingResult EventProcessor::process_event_async(void* events_buffer, size_t buffer_size, size_t event_count,
                                                EventProcessingCallback callback) {
     return pimpl_->process_event_async(events_buffer, buffer_size, event_count, callback);
+}
+
+// Implementation of the public synchronize_async_operations method
+ProcessingResult EventProcessor::synchronize_async_operations() {
+    return pimpl_->synchronize_async_operations();
 }
 
 // Utility functions for pinned memory management
