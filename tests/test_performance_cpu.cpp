@@ -81,13 +81,13 @@ TEST_CASE("Performance - CPU vs GPU Comparison", "[performance][comparison][benc
     for (size_t event_count : event_counts) {
         std::vector<NetworkEvent> gpu_events(event_count);
         std::vector<NetworkEvent> cpu_events(event_count);
+        size_t buffer_size = gpu_events.size() * sizeof(NetworkEvent);
         
         create_test_events_cpu(gpu_events);
         cpu_events = copy_events_cpu(gpu_events); // Ensure same input data
         
         // Warm up GPU
         reset_event_actions_cpu(gpu_events);
-        size_t buffer_size = gpu_events.size() * sizeof(NetworkEvent);
         processor.process_events(gpu_events.data(), buffer_size, gpu_events.size());
         
         std::string gpu_test_name = "GPU " + std::string(function_name) + " - " + std::to_string(event_count) + " events";
@@ -168,6 +168,7 @@ TEST_CASE("Performance - Multiple Filter Comparison", "[performance][filters][be
         // Warm up GPU
         reset_event_actions_cpu(gpu_events);
         size_t buffer_size = gpu_events.size() * sizeof(NetworkEvent);
+        processor.register_host_buffer(gpu_events.data(), buffer_size);
         processor.process_events(gpu_events.data(), buffer_size, gpu_events.size());
         
         std::string gpu_test_name = "GPU " + std::string(function_name);

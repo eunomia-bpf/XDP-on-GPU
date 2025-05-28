@@ -466,6 +466,10 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
             // Reset event states for this test
             reset_event_actions(events);
             
+            // Register the buffer as pinned memory for maximum performance - only once
+            ProcessingResult register_result = processor.register_host_buffer(events.data(), buffer_size);
+            REQUIRE(register_result == ProcessingResult::Success);
+            
             // Create benchmark name
             std::string benchmark_name = "Batch size: " + format_size(test_batch_size);
             
