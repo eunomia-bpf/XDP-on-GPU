@@ -26,7 +26,7 @@ TEST_CASE("Integration - Complete Workflow", "[integration]") {
         KernelLoader loader;
         std::string simple_ptx = R"(
 .version 7.0
-.target sm_75
+.target sm_61
 .address_size 64
 
 .visible .entry integration_test_kernel(
@@ -47,6 +47,12 @@ TEST_CASE("Integration - Complete Workflow", "[integration]") {
 
 TEST_CASE("Integration - Error Handling", "[integration]") {
     SECTION("Exception propagation") {
+        // Initialize GPU device manager first
+        GpuDeviceManager device_manager;
+        if (device_manager.get_device_count() == 0) {
+            SKIP("No CUDA devices available for error handling testing");
+        }
+        
         // Test that exceptions are properly propagated through the system
         KernelLoader loader;
         

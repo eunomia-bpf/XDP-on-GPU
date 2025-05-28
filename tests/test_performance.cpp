@@ -23,11 +23,17 @@ TEST_CASE("Performance - GPU Device Detection", "[performance]") {
 }
 
 TEST_CASE("Performance - Kernel Loading", "[performance]") {
+    // Initialize GPU device manager first to set up CUDA context
+    GpuDeviceManager device_manager;
+    if (device_manager.get_device_count() == 0) {
+        SKIP("No CUDA devices available for performance testing");
+    }
+    
     KernelLoader loader;
     
     std::string simple_ptx = R"(
 .version 7.0
-.target sm_75
+.target sm_61
 .address_size 64
 
 .visible .entry simple_kernel(
