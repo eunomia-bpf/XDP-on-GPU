@@ -7,33 +7,23 @@
 
 using namespace std;
 
-// Generate PTX at runtime
+// Load PTX from pre-generated file
 const char* get_ptx_code() {
     static char* ptx_code = nullptr;
     if (ptx_code) return ptx_code;
     
-    // Try to generate PTX from our CUDA kernels
-    const char* ptx_path = getenv("CUDA_PTX_PATH");
-    if (!ptx_path) {
-        ptx_path = "test_kernels.ptx";
-    }
+#ifdef PTX_FILE_PATH
+    const char* ptx_path = PTX_FILE_PATH;
+#else
+    const char* ptx_path = "cuda_kernels.ptx";
+#endif
     
-    // Generate PTX from CUDA kernels
-    cout << "Generating PTX from CUDA kernels..." << endl;
-    string cmd = "nvcc -ptx -arch=sm_90 tests/cuda_kernels.cu -o ";
-    cmd += ptx_path;
-    cmd += " -I include";
+    cout << "Loading PTX from: " << ptx_path << endl;
     
-    int result = system(cmd.c_str());
-    if (result != 0) {
-        cout << "Failed to generate PTX" << endl;
-        return nullptr;
-    }
-    
-    // Read the generated PTX file
+    // Read the pre-generated PTX file
     FILE* file = fopen(ptx_path, "r");
     if (!file) {
-        cout << "Warning: Could not open generated PTX file" << endl;
+        cout << "Error: Could not open PTX file: " << ptx_path << endl;
         return nullptr;
     }
     
@@ -46,7 +36,7 @@ const char* get_ptx_code() {
     ptx_code[size] = '\0';
     fclose(file);
     
-    cout << "PTX generated successfully!" << endl;
+    cout << "PTX loaded successfully!" << endl;
     return ptx_code;
 }
 

@@ -1,17 +1,53 @@
 cmake_minimum_required(VERSION 3.18)
-project(cuda_event_processor LANGUAGES CXX CUDA)
+project(ebpf_gpu_processor LANGUAGES CXX CUDA)
 
+# Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
+# Build type
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
+
+# Compiler flags
+set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -Wall -Wextra")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 
 # Find CUDA
 find_package(CUDAToolkit REQUIRED)
 enable_language(CUDA)
 
-# Set CUDA flags for H100 (compute capability 9.0)
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_90,code=sm_90")
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_86,code=sm_86")
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_80,code=sm_80")
+# Detect GPU architecture automatically
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    # Try to detect GPU architecture
+    execute_process(
+        COMMAND nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits
+        OUTPUT_VARIABLE GPU_COMPUTE_CAPS
+        ERROR_QUIET
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    
+    if(GPU_COMPUTE_CAPS)
+        string(REPLACE "\n" ";" GPU_COMPUTE_CAPS_LIST ${GPU_COMPUTE_CAPS})
+        list(GET GPU_COMPUTE_CAPS_LIST 0 FIRST_GPU_CAP)
+        string(REPLACE "." "" CUDA_ARCH ${FIRST_GPU_CAP})
+        set(CMAKE_CUDA_ARCHITECTURES ${CUDA_ARCH})
+        message(STATUS "Detected GPU compute capability: ${FIRST_GPU_CAP}, using architecture: ${CUDA_ARCH}")
+    else()
+        # Fallback to common architectures
+        set(CMAKE_CUDA_ARCHITECTURES "75;80;86;89;90")
+        message(STATUS "Could not detect GPU, using fallback architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+    endif()
+endif()
+
+# CUDA compilation flags
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --extended-lambda")
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -g -G")
+endif()
 
 # Include directories
 include_directories(include)
@@ -19,23 +55,42 @@ include_directories(include)
 # Library source files
 set(LIB_SOURCES
     src/cuda_event_processor.cpp
+    src/gpu_device_manager.cpp
+    src/kernel_loader.cpp
+    src/error_handling.cpp
 )
 
 # Create the library
-add_library(cuda_event_processor STATIC ${LIB_SOURCES})
+add_library(ebpf_gpu_processor STATIC ${LIB_SOURCES})
 
-# Link CUDA libraries
-target_link_libraries(cuda_event_processor CUDA::cuda_driver CUDA::cudart)
-
-# Test executable with CUDA kernels
-add_executable(test_processor 
-    tests/test_basic.cpp
-    tests/cuda_kernels.cu
-)
-target_link_libraries(test_processor cuda_event_processor)
-
-# Set properties
-set_target_properties(cuda_event_processor PROPERTIES
+# Set target properties
+set_target_properties(ebpf_gpu_processor PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
     POSITION_INDEPENDENT_CODE ON
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+)
+
+# Link CUDA libraries
+target_link_libraries(ebpf_gpu_processor 
+    CUDA::cuda_driver 
+    CUDA::cudart
+)
+
+# Test framework
+option(BUILD_TESTS "Build tests" ON)
+if(BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
+# Installation
+install(TARGETS ebpf_gpu_processor
+    ARCHIVE DESTINATION lib
+    LIBRARY DESTINATION lib
+)
+
+install(DIRECTORY include/
+    DESTINATION include
+    FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp"
 ) 
