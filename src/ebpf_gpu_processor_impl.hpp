@@ -65,6 +65,9 @@ private:
     void cleanup_streams();
     cudaStream_t get_available_stream();
     
+    // Device buffer management
+    ProcessingResult ensure_stream_buffers(size_t required_buffer_size);
+    
     // Context management
     ProcessingResult ensure_context_current();
     

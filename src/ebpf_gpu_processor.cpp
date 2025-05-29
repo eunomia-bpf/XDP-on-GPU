@@ -340,43 +340,9 @@ ProcessingResult EventProcessor::Impl::process_events_multi_batch_pipelined(void
     }
     
     // Ensure we have adequate device buffers for each stream
-    if (device_buffers_.size() != num_streams) {
-        // Clean up old buffers
-        for (void* buffer : device_buffers_) {
-            if (buffer) cudaFree(buffer);
-        }
-        device_buffers_.clear();
-        buffer_sizes_.clear();
-        
-        // Allocate new buffers for each stream
-        device_buffers_.resize(num_streams);
-        buffer_sizes_.resize(num_streams);
-        
-        for (size_t i = 0; i < num_streams; i++) {
-            cudaError_t result = cudaMalloc(&device_buffers_[i], max_batch_bytes);
-            if (result != cudaSuccess) {
-                // Clean up partially allocated buffers
-                for (size_t j = 0; j < i; j++) {
-                    cudaFree(device_buffers_[j]);
-                }
-                device_buffers_.clear();
-                buffer_sizes_.clear();
-                return ProcessingResult::DeviceError;
-            }
-            buffer_sizes_[i] = max_batch_bytes;
-        }
-    } else {
-        // Ensure existing buffers are large enough
-        for (size_t i = 0; i < num_streams; i++) {
-            if (buffer_sizes_[i] < max_batch_bytes) {
-                cudaFree(device_buffers_[i]);
-                cudaError_t result = cudaMalloc(&device_buffers_[i], max_batch_bytes);
-                if (result != cudaSuccess) {
-                    return ProcessingResult::DeviceError;
-                }
-                buffer_sizes_[i] = max_batch_bytes;
-            }
-        }
+    ProcessingResult buffer_result = ensure_stream_buffers(max_batch_bytes);
+    if (buffer_result != ProcessingResult::Success) {
+        return buffer_result;
     }
     
     // Ensure we have enough events for synchronization (3 per stream: H2D, kernel, D2H)
@@ -674,6 +640,13 @@ void EventProcessor::Impl::initialize_streams() {
     
     // Reset current stream index
     current_stream_idx_ = 0;
+    
+    // Initialize device buffers for each stream with default buffer size
+    // This ensures buffers are ready when streams are first used
+    ProcessingResult buffer_result = ensure_stream_buffers(config_.buffer_size);
+    if (buffer_result != ProcessingResult::Success) {
+        throw std::runtime_error("Failed to allocate device buffers for streams");
+    }
 }
 
 // Get an available stream for a new batch of processing
@@ -730,6 +703,56 @@ void EventProcessor::Impl::cleanup_streams() {
     }
     device_buffers_.clear();
     buffer_sizes_.clear();
+}
+
+// Ensure we have adequate device buffers for each stream
+ProcessingResult EventProcessor::Impl::ensure_stream_buffers(size_t required_buffer_size) {
+    size_t num_streams = cuda_streams_.size();
+    if (num_streams == 0) {
+        return ProcessingResult::DeviceError;
+    }
+    
+    // Check if we need to allocate or reallocate buffers
+    if (device_buffers_.size() != num_streams) {
+        // Clean up old buffers
+        for (void* buffer : device_buffers_) {
+            if (buffer) cudaFree(buffer);
+        }
+        device_buffers_.clear();
+        buffer_sizes_.clear();
+        
+        // Allocate new buffers for each stream
+        device_buffers_.resize(num_streams);
+        buffer_sizes_.resize(num_streams);
+        
+        for (size_t i = 0; i < num_streams; i++) {
+            cudaError_t result = cudaMalloc(&device_buffers_[i], required_buffer_size);
+            if (result != cudaSuccess) {
+                // Clean up partially allocated buffers
+                for (size_t j = 0; j < i; j++) {
+                    cudaFree(device_buffers_[j]);
+                }
+                device_buffers_.clear();
+                buffer_sizes_.clear();
+                return ProcessingResult::DeviceError;
+            }
+            buffer_sizes_[i] = required_buffer_size;
+        }
+    } else {
+        // Ensure existing buffers are large enough
+        for (size_t i = 0; i < num_streams; i++) {
+            if (buffer_sizes_[i] < required_buffer_size) {
+                cudaFree(device_buffers_[i]);
+                cudaError_t result = cudaMalloc(&device_buffers_[i], required_buffer_size);
+                if (result != cudaSuccess) {
+                    return ProcessingResult::DeviceError;
+                }
+                buffer_sizes_[i] = required_buffer_size;
+            }
+        }
+    }
+    
+    return ProcessingResult::Success;
 }
 
 // Implementation of the synchronize_async_operations method
