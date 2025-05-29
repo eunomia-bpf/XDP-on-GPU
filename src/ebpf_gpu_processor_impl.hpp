@@ -49,30 +49,11 @@ private:
     GpuDeviceManager device_manager_;
     int device_id_;
     
-    // Async processing support
-    struct EventBatch {
-        void* data;
-        size_t size;
-        size_t count;
-        cudaStream_t stream;
-        bool owns_memory;  // Whether the batch owns the data buffer
-        
-        // New fields for low-latency processing
-        bool owns_buffer;  // Whether this batch owns its device buffer
-        void* device_buffer;  // Device buffer used for this batch (may be different from device_buffer_)
-        
-        // Constructor with default initialization
-        EventBatch() : data(nullptr), size(0), count(0), stream(nullptr),
-                      owns_memory(false), owns_buffer(false), device_buffer(nullptr) {}
-        
-        // Constructor with parameters
-        EventBatch(void* _data, size_t _size, size_t _count,
-                  cudaStream_t _stream, bool _owns_memory) 
-            : data(_data), size(_size), count(_count), stream(_stream),
-              owns_memory(_owns_memory), owns_buffer(false), device_buffer(nullptr) {}
-    };
-    
+    // Async processing support with multiple device buffers for better overlap
     std::vector<cudaStream_t> cuda_streams_;
+    std::vector<cudaEvent_t> cuda_events_;  // Events for pipeline synchronization
+    std::vector<void*> device_buffers_;     // Multiple device buffers, one per stream
+    std::vector<size_t> buffer_sizes_;      // Size of each device buffer
     size_t current_stream_idx_;  // Instance variable for round-robin stream selection
     
     void initialize_device();
@@ -94,6 +75,9 @@ private:
     // Optimized multi-batch processing with pipelined execution
     ProcessingResult process_events_multi_batch_pipelined(void* events_buffer, size_t buffer_size, 
                                                          size_t event_count, bool is_async);
+                                                         
+    // Helper method to get total device buffer memory usage
+    size_t get_total_device_buffer_memory() const;
 };
 
 } // namespace ebpf_gpu 

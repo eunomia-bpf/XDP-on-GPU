@@ -13,9 +13,23 @@ EventProcessor::Impl::Impl(const Config& config)
 }
 
 EventProcessor::Impl::~Impl() {
+    // Clean up multiple device buffers
+    for (void* buffer : device_buffers_) {
+        if (buffer) {
+            cudaFree(buffer);
+        }
+    }
+    device_buffers_.clear();
+    buffer_sizes_.clear();
+    
+    // Clean up original device buffer
     if (device_buffer_) {
         cudaFree(device_buffer_);
     }
+    
+    // Clean up streams and events
+    cleanup_streams();
+    
     if (context_) {
         cuCtxDestroy(context_);
     }
@@ -70,6 +84,9 @@ void EventProcessor::Impl::initialize_device() {
         throw std::runtime_error("Failed to allocate device memory");
     }
     buffer_size_ = config_.buffer_size;
+    
+    // Initialize CUDA streams after context is created and set
+    initialize_streams();
 }
 
 ProcessingResult EventProcessor::Impl::load_kernel_from_ptx(const std::string& ptx_code, const std::string& function_name) {
@@ -312,74 +329,148 @@ ProcessingResult EventProcessor::Impl::process_events_multi_batch_pipelined(void
     size_t event_size = buffer_size / event_count;
     size_t max_batch_bytes = batch_size * event_size;
     
-    // Ensure we have adequate device memory
-    ProcessingResult buffer_result = ensure_buffer_size(max_batch_bytes);
-    if (buffer_result != ProcessingResult::Success) {
-        return ProcessingResult::DeviceError;
-    }
-    
     // Initialize streams if not already done
     if (cuda_streams_.empty()) {
         initialize_streams();
     }
     
-    // CRITICAL FIX: Process batches sequentially to avoid race conditions
-    // Using one stream ensures no buffer conflicts
-    cudaStream_t stream = get_available_stream();
+    size_t num_streams = cuda_streams_.size();
+    if (num_streams == 0) {
+        return ProcessingResult::DeviceError;
+    }
     
-    // Process each batch sequentially
+    // Ensure we have adequate device buffers for each stream
+    if (device_buffers_.size() != num_streams) {
+        // Clean up old buffers
+        for (void* buffer : device_buffers_) {
+            if (buffer) cudaFree(buffer);
+        }
+        device_buffers_.clear();
+        buffer_sizes_.clear();
+        
+        // Allocate new buffers for each stream
+        device_buffers_.resize(num_streams);
+        buffer_sizes_.resize(num_streams);
+        
+        for (size_t i = 0; i < num_streams; i++) {
+            cudaError_t result = cudaMalloc(&device_buffers_[i], max_batch_bytes);
+            if (result != cudaSuccess) {
+                // Clean up partially allocated buffers
+                for (size_t j = 0; j < i; j++) {
+                    cudaFree(device_buffers_[j]);
+                }
+                device_buffers_.clear();
+                buffer_sizes_.clear();
+                return ProcessingResult::DeviceError;
+            }
+            buffer_sizes_[i] = max_batch_bytes;
+        }
+    } else {
+        // Ensure existing buffers are large enough
+        for (size_t i = 0; i < num_streams; i++) {
+            if (buffer_sizes_[i] < max_batch_bytes) {
+                cudaFree(device_buffers_[i]);
+                cudaError_t result = cudaMalloc(&device_buffers_[i], max_batch_bytes);
+                if (result != cudaSuccess) {
+                    return ProcessingResult::DeviceError;
+                }
+                buffer_sizes_[i] = max_batch_bytes;
+            }
+        }
+    }
+    
+    // Ensure we have enough events for synchronization (3 per stream: H2D, kernel, D2H)
+    size_t required_events = num_streams * 3;
+    if (cuda_events_.size() < required_events) {
+        // Clean up old events
+        for (auto& event : cuda_events_) {
+            cudaEventDestroy(event);
+        }
+        cuda_events_.clear();
+        
+        // Create new events
+        cuda_events_.resize(required_events);
+        for (size_t i = 0; i < required_events; i++) {
+            cudaError_t result = cudaEventCreate(&cuda_events_[i]);
+            if (result != cudaSuccess) {
+                // Clean up partially created events
+                for (size_t j = 0; j < i; j++) {
+                    cudaEventDestroy(cuda_events_[j]);
+                }
+                cuda_events_.clear();
+                return ProcessingResult::DeviceError;
+            }
+        }
+    }
+    
+    // Process batches with optimized pipeline overlap
     for (size_t batch = 0; batch < num_batches; batch++) {
-        // Calculate batch parameters
         size_t offset = batch * batch_size;
         size_t current_batch_events = std::min(batch_size, event_count - offset);
         size_t current_batch_bytes = current_batch_events * event_size;
         char* batch_buffer = static_cast<char*>(events_buffer) + (offset * event_size);
         
-        // Execute 3-stage pipeline: H2D -> Kernel -> D2H
-        // Stage 1: Host to Device transfer
-        cudaError_t result = cudaMemcpyAsync(device_buffer_, batch_buffer, current_batch_bytes, 
-                                           cudaMemcpyHostToDevice, stream);
-        if (result != cudaSuccess) {
-            return ProcessingResult::DeviceError;
+        // Get stream and device buffer for this batch using round-robin
+        size_t stream_idx = batch % num_streams;
+        cudaStream_t current_stream = cuda_streams_[stream_idx];
+        void* current_device_buffer = device_buffers_[stream_idx];
+        
+        // Calculate event indices for this stream
+        size_t h2d_event_idx = stream_idx * 3;
+        size_t kernel_event_idx = stream_idx * 3 + 1;
+        size_t d2h_event_idx = stream_idx * 3 + 2;
+        
+        // Wait for previous iteration on this stream to complete D2H before starting new H2D
+        if (batch >= num_streams) {
+            cudaError_t wait_result = cudaStreamWaitEvent(current_stream, cuda_events_[d2h_event_idx], 0);
+            if (wait_result != cudaSuccess) return ProcessingResult::DeviceError;
         }
         
-        // Stage 2: Launch kernel
-        void* kernel_args[] = {
-            &device_buffer_,
-            &current_batch_events
-        };
+        // Stage 1: Host to Device transfer
+        cudaError_t result = cudaMemcpyAsync(current_device_buffer, batch_buffer, current_batch_bytes, 
+                                           cudaMemcpyHostToDevice, current_stream);
+        if (result != cudaSuccess) return ProcessingResult::DeviceError;
         
+        // Record H2D completion
+        result = cudaEventRecord(cuda_events_[h2d_event_idx], current_stream);
+        if (result != cudaSuccess) return ProcessingResult::DeviceError;
+        
+        // Stage 2: Kernel execution (automatically waits for H2D due to stream ordering)
+        void* kernel_args[] = { &current_device_buffer, &current_batch_events };
         int block_size = config_.block_size;
         int grid_size = (current_batch_events + block_size - 1) / block_size;
         if (config_.max_grid_size > 0 && grid_size > config_.max_grid_size) {
             grid_size = config_.max_grid_size;
         }
         
-        CUresult cu_result = cuLaunchKernel(
-            kernel_function_,
-            grid_size, 1, 1,
-            block_size, 1, 1,
-            config_.shared_memory_size,
-            stream,
-            kernel_args,
-            nullptr
-        );
-        
+        CUresult cu_result = cuLaunchKernel(kernel_function_, grid_size, 1, 1, block_size, 1, 1,
+                                          config_.shared_memory_size, current_stream, kernel_args, nullptr);
         if (cu_result != CUDA_SUCCESS) {
             return ProcessingResult::KernelError;
         }
         
-        // Stage 3: Device to Host transfer
-        result = cudaMemcpyAsync(batch_buffer, device_buffer_, current_batch_bytes,
-                               cudaMemcpyDeviceToHost, stream);
+        // Record kernel completion
+        result = cudaEventRecord(cuda_events_[kernel_event_idx], current_stream);
+        if (result != cudaSuccess) return ProcessingResult::DeviceError;
+        
+        // Stage 3: Device to Host transfer (automatically waits for kernel due to stream ordering)
+        result = cudaMemcpyAsync(batch_buffer, current_device_buffer, current_batch_bytes,
+                               cudaMemcpyDeviceToHost, current_stream);
         if (result != cudaSuccess) {
             return ProcessingResult::DeviceError;
         }
         
-        // Synchronize after each batch to ensure correctness
-        result = cudaStreamSynchronize(stream);
-        if (result != cudaSuccess) {
-            return ProcessingResult::DeviceError;
+        // Record D2H completion
+        result = cudaEventRecord(cuda_events_[d2h_event_idx], current_stream);
+        if (result != cudaSuccess) return ProcessingResult::DeviceError;
+    }
+    
+    // Final synchronization based on async flag
+    if (!is_async) {
+        // Wait for all streams to complete
+        for (auto& stream : cuda_streams_) {
+            cudaError_t result = cudaStreamSynchronize(stream);
+            if (result != cudaSuccess) return ProcessingResult::DeviceError;
         }
     }
     
@@ -510,15 +601,37 @@ void EventProcessor::Impl::initialize_streams() {
     // Cleanup existing streams first
     cleanup_streams();
     
-    // Determine the number of streams to create
+    // Determine the number of streams to create from config
     int num_streams = config_.max_stream_count;
     if (num_streams <= 0) {
-        // Default to 4 streams if not specified
-        num_streams = 4;
+        // Default to 2 streams if not specified (minimum for effective pipelining)
+        num_streams = 2;
+    }
+    
+    // Ensure we don't create too many streams (practical limit)
+    if (num_streams > 32) {
+        num_streams = 32;
     }
     
     // Create the streams with priorities when possible
-    cuda_streams_.resize(num_streams);
+    cuda_streams_.reserve(num_streams);
+    
+    // Initialize device buffer vectors (actual allocation happens in process_events_multi_batch_pipelined)
+    device_buffers_.clear();
+    buffer_sizes_.clear();
+    device_buffers_.reserve(num_streams);
+    buffer_sizes_.reserve(num_streams);
+    
+    // Create CUDA events for pipeline synchronization
+    cuda_events_.resize(2);
+    for (size_t i = 0; i < cuda_events_.size(); i++) {
+        cudaError_t result = cudaEventCreate(&cuda_events_[i]);
+        if (result != cudaSuccess) {
+            // Handle event creation failure
+            cuda_events_.resize(i);  // Keep only the successfully created events
+            break;
+        }
+    }
     
     // Try to create streams with different priorities
     // Use high priority for the first stream if supported
@@ -526,37 +639,58 @@ void EventProcessor::Impl::initialize_streams() {
     int highest_priority = 0;
     
     // Get the range of priorities supported by the device
-    cudaDeviceGetStreamPriorityRange(&lowest_priority, &highest_priority);
+    cudaError_t priority_result = cudaDeviceGetStreamPriorityRange(&lowest_priority, &highest_priority);
+    bool use_priorities = (priority_result == cudaSuccess);
     
     for (int i = 0; i < num_streams; i++) {
-        // Assign priorities: first stream gets highest priority, rest get normal priority
-        int priority = (i == 0) ? highest_priority : lowest_priority;
+        cudaStream_t stream;
+        cudaError_t result = cudaSuccess;
         
-        // Create stream with priority
-        cudaError_t result = cudaStreamCreateWithPriority(&cuda_streams_[i], 
-                                                     cudaStreamNonBlocking, priority);
+        if (use_priorities) {
+            // Assign priorities: first stream gets highest priority, rest get normal priority
+            int priority = (i == 0) ? highest_priority : lowest_priority;
+            
+            // Create stream with priority
+            result = cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, priority);
+        }
+        
+        if (!use_priorities || result != cudaSuccess) {
+            // Fall back to regular stream creation if priority streams fail
+            result = cudaStreamCreate(&stream);
+        }
         
         if (result != cudaSuccess) {
-            // Fall back to regular stream creation if priority streams fail
-            result = cudaStreamCreate(&cuda_streams_[i]);
-            if (result != cudaSuccess) {
-                // Handle stream creation failure
-                cuda_streams_.resize(i);  // Keep only the successfully created streams
-                break;
-            }
+            // Log warning but continue with streams we have
+            break;
         }
+        
+        cuda_streams_.push_back(stream);
     }
+    
+    // Ensure we have at least one stream
+    if (cuda_streams_.empty()) {
+        throw std::runtime_error("Failed to create any CUDA streams");
+    }
+    
+    // Reset current stream index
+    current_stream_idx_ = 0;
 }
 
 // Get an available stream for a new batch of processing
 cudaStream_t EventProcessor::Impl::get_available_stream() {
-    // Handle the case where no streams have been created
+    // Initialize streams if they haven't been created yet
     if (cuda_streams_.empty()) {
-        // Initialize one stream on demand
+        initialize_streams();
+    }
+    
+    // If still empty after initialization, create at least one stream
+    if (cuda_streams_.empty()) {
         cuda_streams_.resize(1);
-        cudaStreamCreate(&cuda_streams_[0]);
+        cudaError_t result = cudaStreamCreate(&cuda_streams_[0]);
+        if (result != cudaSuccess) {
+            throw std::runtime_error("Failed to create CUDA stream");
+        }
         current_stream_idx_ = 0;
-        return cuda_streams_[0];
     }
     
     // Get the next stream in a round-robin fashion
@@ -579,6 +713,23 @@ void EventProcessor::Impl::cleanup_streams() {
     
     // Clear the vector
     cuda_streams_.clear();
+    
+    // Destroy all CUDA events
+    for (auto& event : cuda_events_) {
+        cudaEventDestroy(event);
+    }
+    
+    // Clear the events vector
+    cuda_events_.clear();
+    
+    // Clean up device buffers associated with streams
+    for (void* buffer : device_buffers_) {
+        if (buffer) {
+            cudaFree(buffer);
+        }
+    }
+    device_buffers_.clear();
+    buffer_sizes_.clear();
 }
 
 // Implementation of the synchronize_async_operations method
@@ -690,6 +841,15 @@ ProcessingResult EventProcessor::Impl::ensure_context_current() {
 // Implementation of the public synchronize_async_operations method
 ProcessingResult EventProcessor::synchronize_async_operations() {
     return pimpl_->synchronize_async_operations();
+}
+
+// Helper method to get total device buffer memory usage
+size_t EventProcessor::Impl::get_total_device_buffer_memory() const {
+    size_t total = buffer_size_;  // Original device buffer
+    for (size_t size : buffer_sizes_) {
+        total += size;  // Additional per-stream buffers
+    }
+    return total;
 }
 
 } // namespace ebpf_gpu 
