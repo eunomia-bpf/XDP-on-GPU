@@ -16,7 +16,8 @@ enum class ProcessingResult {
     Error = -1,
     InvalidInput = -2,
     DeviceError = -3,
-    KernelError = -4
+    KernelError = -4,
+    MemoryError = -5
 };
 
 class EventProcessor {

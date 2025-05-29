@@ -506,11 +506,7 @@ bool EventProcessor::Impl::is_ready() const {
 ProcessingResult EventProcessor::Impl::ensure_buffer_size(size_t required_size) {
     if (!device_buffer_ || buffer_size_ < required_size) {
         if (device_buffer_) {
-            if (config_.use_unified_memory) {
-                cudaFree(device_buffer_);
-            } else {
-                cudaFree(device_buffer_);
-            }
+            cudaFree(device_buffer_);
         }
         
         size_t new_size = std::max(required_size, config_.buffer_size);
@@ -525,7 +521,7 @@ ProcessingResult EventProcessor::Impl::ensure_buffer_size(size_t required_size) 
         if (result != cudaSuccess) {
             device_buffer_ = nullptr;
             buffer_size_ = 0;
-            return ProcessingResult::DeviceError;
+            return ProcessingResult::MemoryError;
         }
         buffer_size_ = new_size;
     }
@@ -768,11 +764,7 @@ ProcessingResult EventProcessor::Impl::ensure_stream_buffers(size_t required_buf
         // Clean up old buffers
         for (void* buffer : device_buffers_) {
             if (buffer) {
-                if (config_.use_unified_memory) {
-                    cudaFree(buffer);
-                } else {
-                    cudaFree(buffer);
-                }
+                cudaFree(buffer);
             }
         }
         device_buffers_.clear();
@@ -793,15 +785,11 @@ ProcessingResult EventProcessor::Impl::ensure_stream_buffers(size_t required_buf
             if (result != cudaSuccess) {
                 // Clean up partially allocated buffers
                 for (size_t j = 0; j < i; j++) {
-                    if (config_.use_unified_memory) {
-                        cudaFree(device_buffers_[j]);
-                    } else {
-                        cudaFree(device_buffers_[j]);
-                    }
+                    cudaFree(device_buffers_[j]);
                 }
                 device_buffers_.clear();
                 buffer_sizes_.clear();
-                return ProcessingResult::DeviceError;
+                return ProcessingResult::MemoryError;
             }
             buffer_sizes_[i] = required_buffer_size;
         }
@@ -809,11 +797,7 @@ ProcessingResult EventProcessor::Impl::ensure_stream_buffers(size_t required_buf
         // Ensure existing buffers are large enough
         for (size_t i = 0; i < num_streams; i++) {
             if (buffer_sizes_[i] < required_buffer_size) {
-                if (config_.use_unified_memory) {
-                    cudaFree(device_buffers_[i]);
-                } else {
-                    cudaFree(device_buffers_[i]);
-                }
+                cudaFree(device_buffers_[i]);
                 
                 cudaError_t result;
                 if (config_.use_unified_memory) {
@@ -823,7 +807,7 @@ ProcessingResult EventProcessor::Impl::ensure_stream_buffers(size_t required_buf
                 }
                 
                 if (result != cudaSuccess) {
-                    return ProcessingResult::DeviceError;
+                    return ProcessingResult::MemoryError;
                 }
                 buffer_sizes_[i] = required_buffer_size;
             }
@@ -885,8 +869,7 @@ ProcessingResult EventProcessor::register_host_buffer(void* ptr, size_t size, un
     }
     cudaError_t result = cudaHostRegister(ptr, size, flags);
     if (result != cudaSuccess) {
-        // Consider mapping CUDA errors to ProcessingResult more granularly if needed
-        return ProcessingResult::DeviceError; 
+        return ProcessingResult::MemoryError;
     }
     return ProcessingResult::Success;
 }
@@ -897,7 +880,7 @@ ProcessingResult EventProcessor::unregister_host_buffer(void* ptr) {
     }
     cudaError_t result = cudaHostUnregister(ptr);
     if (result != cudaSuccess) {
-        return ProcessingResult::DeviceError;
+        return ProcessingResult::MemoryError;
     }
     return ProcessingResult::Success;
 }
