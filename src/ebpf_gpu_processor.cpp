@@ -265,16 +265,32 @@ ProcessingResult EventProcessor::Impl::process_events_single_batch(void* events_
     // Get a stream for this operation
     cudaStream_t stream = get_available_stream();
     
-    // Transfer data to device asynchronously
-    cudaError_t result = cudaMemcpyAsync(device_buffer_, events_buffer, buffer_size, 
-                           cudaMemcpyHostToDevice, stream);
-    if (result != cudaSuccess) {
-        return ProcessingResult::DeviceError;
+    // Check if we can use zero-copy
+    bool use_zero_copy = config_.use_zero_copy;
+    void* device_ptr = device_buffer_;
+    
+    if (use_zero_copy) {
+        // Try to get the device pointer for the host memory
+        cudaError_t result = cudaHostGetDevicePointer(&device_ptr, events_buffer, 0);
+        if (result != cudaSuccess) {
+            // If we can't get the device pointer, fall back to normal copy
+            use_zero_copy = false;
+        }
+    }
+    
+    cudaError_t result;
+    if (!use_zero_copy) {
+        // Transfer data to device asynchronously
+        result = cudaMemcpyAsync(device_buffer_, events_buffer, buffer_size, 
+                               cudaMemcpyHostToDevice, stream);
+        if (result != cudaSuccess) {
+            return ProcessingResult::DeviceError;
+        }
     }
     
     // Launch kernel with all events
     void* kernel_args[] = {
-        &device_buffer_,
+        use_zero_copy ? &device_ptr : &device_buffer_,
         &event_count
     };
     
@@ -302,11 +318,14 @@ ProcessingResult EventProcessor::Impl::process_events_single_batch(void* events_
         return ProcessingResult::KernelError;
     }
     
-    // Copy results back to host asynchronously
-    result = cudaMemcpyAsync(events_buffer, device_buffer_, buffer_size,
-                           cudaMemcpyDeviceToHost, stream);
-    if (result != cudaSuccess) {
-        return ProcessingResult::DeviceError;
+    // Only copy results back if we didn't use zero-copy
+    if (!use_zero_copy) {
+        // Copy results back to host asynchronously
+        result = cudaMemcpyAsync(events_buffer, device_buffer_, buffer_size,
+                               cudaMemcpyDeviceToHost, stream);
+        if (result != cudaSuccess) {
+            return ProcessingResult::DeviceError;
+        }
     }
     
     // For synchronous operation, wait for everything to complete
@@ -339,10 +358,22 @@ ProcessingResult EventProcessor::Impl::process_events_multi_batch_pipelined(void
         return ProcessingResult::DeviceError;
     }
     
-    // Ensure we have adequate device buffers for each stream
-    ProcessingResult buffer_result = ensure_stream_buffers(max_batch_bytes);
-    if (buffer_result != ProcessingResult::Success) {
-        return buffer_result;
+    // Check if we can use zero-copy
+    bool use_zero_copy = config_.use_zero_copy;
+    void* device_ptr = nullptr;
+    
+    if (use_zero_copy) {
+        // Try to get the device pointer for the host memory
+        cudaError_t result = cudaHostGetDevicePointer(&device_ptr, events_buffer, 0);
+        if (result != cudaSuccess) {
+            // If we can't get the device pointer, fall back to normal copy
+            use_zero_copy = false;
+        }
+    } else {
+        ProcessingResult buffer_result = ensure_stream_buffers(max_batch_bytes);
+        if (buffer_result != ProcessingResult::Success) {
+            return buffer_result;
+        }
     }
     
     // Ensure we have enough events for synchronization (3 per stream: H2D, kernel, D2H)
@@ -379,7 +410,9 @@ ProcessingResult EventProcessor::Impl::process_events_multi_batch_pipelined(void
         // Get stream and device buffer for this batch using round-robin
         size_t stream_idx = batch % num_streams;
         cudaStream_t current_stream = cuda_streams_[stream_idx];
-        void* current_device_buffer = device_buffers_[stream_idx];
+        void* current_device_buffer = use_zero_copy ? 
+            static_cast<char*>(device_ptr) + (offset * event_size) : 
+            device_buffers_[stream_idx];
         
         // Calculate event indices for this stream
         size_t h2d_event_idx = stream_idx * 3;
@@ -392,16 +425,18 @@ ProcessingResult EventProcessor::Impl::process_events_multi_batch_pipelined(void
             if (wait_result != cudaSuccess) return ProcessingResult::DeviceError;
         }
         
-        // Stage 1: Host to Device transfer
-        cudaError_t result = cudaMemcpyAsync(current_device_buffer, batch_buffer, current_batch_bytes, 
-                                           cudaMemcpyHostToDevice, current_stream);
-        if (result != cudaSuccess) return ProcessingResult::DeviceError;
+        if (!use_zero_copy) {
+            // Stage 1: Host to Device transfer
+            cudaError_t result = cudaMemcpyAsync(current_device_buffer, batch_buffer, current_batch_bytes, 
+                                               cudaMemcpyHostToDevice, current_stream);
+            if (result != cudaSuccess) return ProcessingResult::DeviceError;
+            
+            // Record H2D completion
+            result = cudaEventRecord(cuda_events_[h2d_event_idx], current_stream);
+            if (result != cudaSuccess) return ProcessingResult::DeviceError;
+        }
         
-        // Record H2D completion
-        result = cudaEventRecord(cuda_events_[h2d_event_idx], current_stream);
-        if (result != cudaSuccess) return ProcessingResult::DeviceError;
-        
-        // Stage 2: Kernel execution (automatically waits for H2D due to stream ordering)
+        // Stage 2: Kernel execution
         void* kernel_args[] = { &current_device_buffer, &current_batch_events };
         int block_size = config_.block_size;
         int grid_size = (current_batch_events + block_size - 1) / block_size;
@@ -416,19 +451,21 @@ ProcessingResult EventProcessor::Impl::process_events_multi_batch_pipelined(void
         }
         
         // Record kernel completion
-        result = cudaEventRecord(cuda_events_[kernel_event_idx], current_stream);
+        cudaError_t result = cudaEventRecord(cuda_events_[kernel_event_idx], current_stream);
         if (result != cudaSuccess) return ProcessingResult::DeviceError;
         
-        // Stage 3: Device to Host transfer (automatically waits for kernel due to stream ordering)
-        result = cudaMemcpyAsync(batch_buffer, current_device_buffer, current_batch_bytes,
-                               cudaMemcpyDeviceToHost, current_stream);
-        if (result != cudaSuccess) {
-            return ProcessingResult::DeviceError;
+        if (!use_zero_copy) {
+            // Stage 3: Device to Host transfer
+            result = cudaMemcpyAsync(batch_buffer, current_device_buffer, current_batch_bytes,
+                                   cudaMemcpyDeviceToHost, current_stream);
+            if (result != cudaSuccess) {
+                return ProcessingResult::DeviceError;
+            }
+            
+            // Record D2H completion
+            result = cudaEventRecord(cuda_events_[d2h_event_idx], current_stream);
+            if (result != cudaSuccess) return ProcessingResult::DeviceError;
         }
-        
-        // Record D2H completion
-        result = cudaEventRecord(cuda_events_[d2h_event_idx], current_stream);
-        if (result != cudaSuccess) return ProcessingResult::DeviceError;
     }
     
     // Final synchronization based on async flag

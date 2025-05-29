@@ -157,6 +157,63 @@ TEST_CASE("Performance - Basic Operations", "[performance][benchmark]") {
     REQUIRE(validate_results(events_1000));
 }
 
+TEST_CASE("Performance - Zero-Copy vs Normal Copy", "[performance][benchmark]") {
+    auto devices = get_available_devices();
+    if (devices.empty()) {
+        SKIP("No CUDA devices available for performance testing");
+    }
+    
+    const char* ptx_code = get_test_ptx();
+    if (!ptx_code) {
+        SKIP("PTX file not found for performance testing");
+    }
+    
+    // Test different event counts
+    for (size_t event_count : test_config::scaling_sizes) {
+        SECTION("Events: " + format_size(event_count)) {
+            // Create test data
+            std::vector<NetworkEvent> events(event_count);
+            create_test_events(events);
+            size_t buffer_size = events.size() * sizeof(NetworkEvent);
+            
+            // Test with normal copy (default config)
+            {
+                EventProcessor processor;
+                ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+                REQUIRE(load_result == ProcessingResult::Success);
+                
+                std::string bench_name = "Normal copy - " + format_size(event_count) + " events";
+                run_benchmark(bench_name, processor, events, [&] {
+                    return processor.process_events(events.data(), buffer_size, events.size());
+                });
+            }
+            
+            // Test with zero-copy
+            {
+                EventProcessor::Config config;
+                config.use_zero_copy = true;
+                
+                EventProcessor processor(config);
+                ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+                REQUIRE(load_result == ProcessingResult::Success);
+                
+                // Register the buffer for zero-copy
+                ProcessingResult register_result = processor.register_host_buffer(events.data(), buffer_size);
+                REQUIRE(register_result == ProcessingResult::Success);
+                
+                std::string bench_name = "Zero-copy - " + format_size(event_count) + " events";
+                run_benchmark(bench_name, processor, events, [&] {
+                    return processor.process_events(events.data(), buffer_size, events.size());
+                });
+                
+                // Unregister the buffer
+                ProcessingResult unregister_result = processor.unregister_host_buffer(events.data());
+                REQUIRE(unregister_result == ProcessingResult::Success);
+            }
+        }
+    }
+}
+
 TEST_CASE("Performance - Scaling Test", "[performance][benchmark]") {
     auto devices = get_available_devices();
     if (devices.empty()) {

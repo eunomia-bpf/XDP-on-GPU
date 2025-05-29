@@ -26,6 +26,7 @@ public:
         size_t buffer_size;  // 1MB default
         bool enable_profiling;
         bool use_unified_memory;
+        bool use_zero_copy;  // Enable zero-copy for registered host buffers
         
         // Kernel launch configuration
         int block_size;  // CUDA block size (threads per block)
@@ -42,11 +43,12 @@ public:
                   buffer_size(1024 * 1024), 
                   enable_profiling(false), 
                   use_unified_memory(false),
+                  use_zero_copy(false),  // Disable zero-copy by default
                   block_size(256),  // Good default for most GPUs
                   shared_memory_size(0),  // No shared memory by default
                   max_grid_size(65535),  // CUDA maximum grid dimension
                   max_stream_count(4),    // Default number of CUDA streams
-                  max_batch_size(1000000)  // Default max batch size (100k)
+                  max_batch_size(100000)  // Default max batch size (100k)
         {}
     };
 
