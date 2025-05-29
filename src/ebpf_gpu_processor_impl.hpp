@@ -5,8 +5,8 @@
 #include <cuda_runtime.h>
 #include <memory>
 #include <vector>
-#include "gpu_device_manager.hpp"
-#include "kernel_loader.hpp"
+#include "../include/gpu_device_manager.hpp"
+#include "../include/kernel_loader.hpp"
 
 namespace ebpf_gpu {
 
@@ -73,6 +73,7 @@ private:
     };
     
     std::vector<cudaStream_t> cuda_streams_;
+    size_t current_stream_idx_;  // Instance variable for round-robin stream selection
     
     void initialize_device();
     ProcessingResult ensure_buffer_size(size_t required_size);
@@ -85,6 +86,14 @@ private:
     
     // Context management
     ProcessingResult ensure_context_current();
+    
+    // Fast path processing for single batch optimization
+    ProcessingResult process_events_single_batch(void* events_buffer, size_t buffer_size, 
+                                                size_t event_count, bool is_async);
+    
+    // Optimized multi-batch processing with pipelined execution
+    ProcessingResult process_events_multi_batch_pipelined(void* events_buffer, size_t buffer_size, 
+                                                         size_t event_count, bool is_async);
 };
 
 } // namespace ebpf_gpu 

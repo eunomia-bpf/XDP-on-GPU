@@ -2,6 +2,8 @@
 
 A robust, high-performance GPU-accelerated packet processing framework for eBPF-style network filtering using CUDA.
 
+for profile, using `/usr/lib/nsight-systems/host-linux-x64/QdstrmImporter`
+
 ## Features
 
 - **Modern C++ Design**: Clean, RAII-based architecture with proper error handling
