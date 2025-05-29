@@ -279,7 +279,7 @@ ProcessingResult EventProcessor::Impl::process_events_single_batch(void* events_
     }
     
     cudaError_t result;
-    if (!use_zero_copy) {
+    if (!use_zero_copy && !config_.use_unified_memory) {
         // Transfer data to device asynchronously
         result = cudaMemcpyAsync(device_buffer_, events_buffer, buffer_size, 
                                cudaMemcpyHostToDevice, stream);
@@ -318,8 +318,8 @@ ProcessingResult EventProcessor::Impl::process_events_single_batch(void* events_
         return ProcessingResult::KernelError;
     }
     
-    // Only copy results back if we didn't use zero-copy
-    if (!use_zero_copy) {
+    // Only copy results back if we didn't use zero-copy or unified memory
+    if (!use_zero_copy && !config_.use_unified_memory) {
         // Copy results back to host asynchronously
         result = cudaMemcpyAsync(events_buffer, device_buffer_, buffer_size,
                                cudaMemcpyDeviceToHost, stream);
@@ -369,7 +369,10 @@ ProcessingResult EventProcessor::Impl::process_events_multi_batch_pipelined(void
             // If we can't get the device pointer, fall back to normal copy
             use_zero_copy = false;
         }
-    } else {
+    }
+    
+    // Only ensure stream buffers if we're not using zero-copy or unified memory
+    if (!use_zero_copy && !config_.use_unified_memory) {
         ProcessingResult buffer_result = ensure_stream_buffers(max_batch_bytes);
         if (buffer_result != ProcessingResult::Success) {
             return buffer_result;
@@ -425,7 +428,7 @@ ProcessingResult EventProcessor::Impl::process_events_multi_batch_pipelined(void
             if (wait_result != cudaSuccess) return ProcessingResult::DeviceError;
         }
         
-        if (!use_zero_copy) {
+        if (!use_zero_copy && !config_.use_unified_memory) {
             // Stage 1: Host to Device transfer
             cudaError_t result = cudaMemcpyAsync(current_device_buffer, batch_buffer, current_batch_bytes, 
                                                cudaMemcpyHostToDevice, current_stream);
@@ -454,7 +457,7 @@ ProcessingResult EventProcessor::Impl::process_events_multi_batch_pipelined(void
         cudaError_t result = cudaEventRecord(cuda_events_[kernel_event_idx], current_stream);
         if (result != cudaSuccess) return ProcessingResult::DeviceError;
         
-        if (!use_zero_copy) {
+        if (!use_zero_copy && !config_.use_unified_memory) {
             // Stage 3: Device to Host transfer
             result = cudaMemcpyAsync(batch_buffer, current_device_buffer, current_batch_bytes,
                                    cudaMemcpyDeviceToHost, current_stream);
@@ -503,11 +506,22 @@ bool EventProcessor::Impl::is_ready() const {
 ProcessingResult EventProcessor::Impl::ensure_buffer_size(size_t required_size) {
     if (!device_buffer_ || buffer_size_ < required_size) {
         if (device_buffer_) {
-            cudaFree(device_buffer_);
+            if (config_.use_unified_memory) {
+                cudaFree(device_buffer_);
+            } else {
+                cudaFree(device_buffer_);
+            }
         }
         
         size_t new_size = std::max(required_size, config_.buffer_size);
-        cudaError_t result = cudaMalloc(&device_buffer_, new_size);
+        cudaError_t result;
+        
+        if (config_.use_unified_memory) {
+            result = cudaMallocManaged(&device_buffer_, new_size);
+        } else {
+            result = cudaMalloc(&device_buffer_, new_size);
+        }
+        
         if (result != cudaSuccess) {
             device_buffer_ = nullptr;
             buffer_size_ = 0;
@@ -753,7 +767,13 @@ ProcessingResult EventProcessor::Impl::ensure_stream_buffers(size_t required_buf
     if (device_buffers_.size() != num_streams) {
         // Clean up old buffers
         for (void* buffer : device_buffers_) {
-            if (buffer) cudaFree(buffer);
+            if (buffer) {
+                if (config_.use_unified_memory) {
+                    cudaFree(buffer);
+                } else {
+                    cudaFree(buffer);
+                }
+            }
         }
         device_buffers_.clear();
         buffer_sizes_.clear();
@@ -763,11 +783,21 @@ ProcessingResult EventProcessor::Impl::ensure_stream_buffers(size_t required_buf
         buffer_sizes_.resize(num_streams);
         
         for (size_t i = 0; i < num_streams; i++) {
-            cudaError_t result = cudaMalloc(&device_buffers_[i], required_buffer_size);
+            cudaError_t result;
+            if (config_.use_unified_memory) {
+                result = cudaMallocManaged(&device_buffers_[i], required_buffer_size);
+            } else {
+                result = cudaMalloc(&device_buffers_[i], required_buffer_size);
+            }
+            
             if (result != cudaSuccess) {
                 // Clean up partially allocated buffers
                 for (size_t j = 0; j < i; j++) {
-                    cudaFree(device_buffers_[j]);
+                    if (config_.use_unified_memory) {
+                        cudaFree(device_buffers_[j]);
+                    } else {
+                        cudaFree(device_buffers_[j]);
+                    }
                 }
                 device_buffers_.clear();
                 buffer_sizes_.clear();
@@ -779,8 +809,19 @@ ProcessingResult EventProcessor::Impl::ensure_stream_buffers(size_t required_buf
         // Ensure existing buffers are large enough
         for (size_t i = 0; i < num_streams; i++) {
             if (buffer_sizes_[i] < required_buffer_size) {
-                cudaFree(device_buffers_[i]);
-                cudaError_t result = cudaMalloc(&device_buffers_[i], required_buffer_size);
+                if (config_.use_unified_memory) {
+                    cudaFree(device_buffers_[i]);
+                } else {
+                    cudaFree(device_buffers_[i]);
+                }
+                
+                cudaError_t result;
+                if (config_.use_unified_memory) {
+                    result = cudaMallocManaged(&device_buffers_[i], required_buffer_size);
+                } else {
+                    result = cudaMalloc(&device_buffers_[i], required_buffer_size);
+                }
+                
                 if (result != cudaSuccess) {
                     return ProcessingResult::DeviceError;
                 }

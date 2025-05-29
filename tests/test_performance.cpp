@@ -214,6 +214,68 @@ TEST_CASE("Performance - Zero-Copy vs Normal Copy", "[performance][benchmark]") 
     }
 }
 
+TEST_CASE("Performance - Unified Memory vs Normal Copy", "[performance][benchmark]") {
+    auto devices = get_available_devices();
+    if (devices.empty()) {
+        SKIP("No CUDA devices available for performance testing");
+    }
+    
+    const char* ptx_code = get_test_ptx();
+    if (!ptx_code) {
+        SKIP("PTX file not found for performance testing");
+    }
+    
+    // Check if any device supports unified memory
+    bool any_device_supports_unified = false;
+    for (const auto& device : devices) {
+        if (device.unified_addressing) {
+            any_device_supports_unified = true;
+            break;
+        }
+    }
+    
+    if (!any_device_supports_unified) {
+        SKIP("No CUDA devices with unified memory support available");
+    }
+    
+    // Test different event counts
+    for (size_t event_count : {100, 1000, 10000, 100000}) {
+        SECTION("Events: " + format_size(event_count)) {
+            // Create test data
+            std::vector<NetworkEvent> events(event_count);
+            create_test_events(events);
+            size_t buffer_size = events.size() * sizeof(NetworkEvent);
+            
+            // Test with normal copy (default config)
+            {
+                EventProcessor processor;
+                ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+                REQUIRE(load_result == ProcessingResult::Success);
+                
+                std::string bench_name = "Normal copy - " + format_size(event_count) + " events";
+                run_benchmark(bench_name, processor, events, [&] {
+                    return processor.process_events(events.data(), buffer_size, events.size());
+                });
+            }
+            
+            // Test with unified memory
+            {
+                EventProcessor::Config config;
+                config.use_unified_memory = true;
+                
+                EventProcessor processor(config);
+                ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+                REQUIRE(load_result == ProcessingResult::Success);
+                
+                std::string bench_name = "Unified memory - " + format_size(event_count) + " events";
+                run_benchmark(bench_name, processor, events, [&] {
+                    return processor.process_events(events.data(), buffer_size, events.size());
+                });
+            }
+        }
+    }
+}
+
 TEST_CASE("Performance - Scaling Test", "[performance][benchmark]") {
     auto devices = get_available_devices();
     if (devices.empty()) {
@@ -491,13 +553,11 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
                     true  // is_async
                 );
                 REQUIRE(async_result == ProcessingResult::Success);
-                
-                // Synchronize to ensure completion for benchmarking
-                ProcessingResult sync_result = processor.synchronize_async_operations();
-                REQUIRE(sync_result == ProcessingResult::Success);
-                
                 return async_result;
             });
+            // Synchronize to ensure completion for benchmarking
+            ProcessingResult sync_result = processor.synchronize_async_operations();
+            REQUIRE(sync_result == ProcessingResult::Success);
         };
         
         // Verify asynchronous processing results
