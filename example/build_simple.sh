@@ -22,25 +22,25 @@ cd $BUILD_DIR
 
 # Configure with CMake
 echo "Configuring with CMake..."
-cmake -DCMAKE_BUILD_TYPE=Release -f ../CMakeLists_simple.txt ..
+cmake -DCMAKE_BUILD_TYPE=Release ..
 
 # Build
 echo "Building..."
 make -j$(nproc)
 
 echo "Build completed successfully!"
-echo "Executable: $PWD/simple_packet_processor"
+echo "Executable: $PWD/dpdk_example"
 
 # Show usage
 echo ""
 echo "=== Usage Examples ==="
 echo "1. Test with null PMD (generates packets automatically):"
-echo "   sudo ./simple_packet_processor -c 1 --vdev=net_null0 -- -p 0"
+echo "   sudo ./dpdk_example -c 1 --vdev=net_null0 -- -p 0"
 echo ""
 echo "2. Test with TAP interface:"
-echo "   sudo ./simple_packet_processor -c 1 --vdev=net_tap0,iface=test0 -- -p 0"
+echo "   sudo ./dpdk_example -c 1 --vdev=net_tap0,iface=test0 -- -p 0"
 echo ""
 echo "3. Test with ring PMD:"
-echo "   sudo ./simple_packet_processor -c 1 --vdev=net_ring0 -- -p 0"
+echo "   sudo ./dpdk_example -c 1 --vdev=net_ring0 -- -p 0"
 echo ""
 echo "Note: Run as root or with appropriate permissions for DPDK" 

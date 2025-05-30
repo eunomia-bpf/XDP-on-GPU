@@ -33,3 +33,5 @@
 build/
 test_kernels.ptx
 /Testing
+example/dpdk_example
+example/build_simple

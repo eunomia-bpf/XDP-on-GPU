@@ -11,8 +11,8 @@ echo "1. Compiling the DPDK application..."
 gcc -I/usr/include/dpdk -I/usr/include/x86_64-linux-gnu/dpdk \
     -include rte_config.h \
     -march=native -msse4.2 -mssse3 \
-    minimal_dpdk_example.c \
-    -o minimal_dpdk_example \
+    dpdk_example.c \
+    -o dpdk_example \
     $(pkg-config --libs libdpdk)
 
 if [ $? -eq 0 ]; then
@@ -23,8 +23,8 @@ else
     gcc -I/usr/include/dpdk -I/usr/include/x86_64-linux-gnu/dpdk \
         -include rte_config.h \
         -O2 \
-        minimal_dpdk_example.c \
-        -o minimal_dpdk_example \
+        dpdk_example.c \
+        -o dpdk_example \
         $(pkg-config --libs libdpdk)
     
     if [ $? -eq 0 ]; then
@@ -55,7 +55,7 @@ echo "3. Testing different virtual devices..."
 echo ""
 echo "=== Test 1: null PMD (auto-generates packets) ==="
 echo "Running for 5 seconds..."
-timeout 5s ./minimal_dpdk_example --vdev=net_null0 -l 0 || echo "Test completed"
+timeout 5s ./dpdk_example --vdev=net_null0 -l 0 || echo "Test completed"
 
 echo ""
 echo "=== Test 2: TAP interface ==="
@@ -63,7 +63,7 @@ echo "Creating TAP interface..."
 
 # Run DPDK app with TAP interface in background
 echo "Starting DPDK application with TAP interface..."
-./minimal_dpdk_example --vdev=net_tap0,iface=test0 -l 0 &
+./dpdk_example --vdev=net_tap0,iface=test0 -l 0 &
 DPDK_PID=$!
 
 # Wait a moment for interface to be created
