@@ -8,12 +8,7 @@ echo "=== Setting up DPDK test environment ==="
 
 # Compile the application
 echo "1. Compiling the DPDK application..."
-gcc -I/usr/include/dpdk -I/usr/include/x86_64-linux-gnu/dpdk \
-    -include rte_config.h \
-    -march=native -msse4.2 -mssse3 \
-    dpdk_example.c \
-    -o dpdk_example \
-    $(pkg-config --libs libdpdk)
+make
 
 if [ $? -eq 0 ]; then
     echo "✓ Compilation successful!"
