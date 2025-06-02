@@ -52,7 +52,7 @@ Application options:
 Run with a null PMD device and process packets using the simple_packet_filter CUDA kernel:
 
 ```bash
-./dpdk_example --vdev=net_null0 -l 0 -- --kernel=examples/simple_packet_filter.cu --function=packet_filter
+build/example/dpdk_example --vdev=net_null0 -l 0 -- --kernel=examples/simple_packet_filter.cu --function=packet_filter
 ```
 
 Run with a TAP interface without GPU processing:

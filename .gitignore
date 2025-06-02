@@ -10,7 +10,7 @@
 # Precompiled Headers
 *.gch
 *.pch
-
+examples/simple_packet_filter.cu
 # Compiled Dynamic libraries
 *.so
 *.dylib
