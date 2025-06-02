@@ -87,52 +87,22 @@ static inline void update_metrics(uint16_t port, uint32_t nb_rx, uint64_t rx_byt
 /* Print final metrics */
 static void print_metrics(void)
 {
-    uint64_t current_time = get_timestamp_sec();
-    uint64_t runtime_sec = current_time - g_metrics.start_time_sec;
-    uint16_t num_ports = dpdk_get_port_count();
+    uint64_t runtime_sec = get_timestamp_sec() - g_metrics.start_time_sec;
+    if (runtime_sec == 0) runtime_sec = 1; // Avoid division by zero
     
-    std::cout << "\n================================================================================" << std::endl;
-    std::cout << "DPDK PACKET PROCESSING METRICS WITH GPU ACCELERATION" << std::endl;
-    std::cout << "================================================================================" << std::endl;
-    std::cout << "Runtime: " << runtime_sec << " seconds" << std::endl;
-    std::cout << "Total RX Packets: " << g_metrics.total_rx_packets << std::endl;
-    std::cout << "Total RX Bytes: " << g_metrics.total_rx_bytes 
-              << " (" << (g_metrics.total_rx_bytes / (1024.0 * 1024.0)) << " MB)" << std::endl;
+    double pps = (double)g_metrics.total_rx_packets / runtime_sec;
+    double mbps = (double)g_metrics.total_rx_bytes * 8 / runtime_sec / (1024*1024);
+    
+    std::cout << "\n" << (g_config.use_gpu ? "GPU" : "CPU") << " mode: "
+              << runtime_sec << "s, "
+              << pps << " pkt/s, "
+              << mbps << " Mbps";
     
     if (g_config.use_gpu) {
-        std::cout << "Total Processed Packets (GPU): " << g_metrics.total_processed_packets << std::endl;
+        double gpu_pps = (double)g_metrics.total_processed_packets / runtime_sec;
+        std::cout << ", GPU: " << gpu_pps << " pkt/s";
     }
-    
-    if (runtime_sec > 0) {
-        std::cout << "Average RX Rate: " << ((double)g_metrics.total_rx_packets / runtime_sec) << " pps, "
-                  << ((double)g_metrics.total_rx_bytes * 8 / runtime_sec / (1024*1024)) << " Mbps" << std::endl;
-        
-        if (g_config.use_gpu) {
-            std::cout << "Average GPU Processing Rate: " << ((double)g_metrics.total_processed_packets / runtime_sec) << " pps" << std::endl;
-        }
-    }
-    
-    std::cout << "\nPER-PORT STATISTICS:" << std::endl;
-    if (g_config.use_gpu) {
-        std::cout << std::left << std::setw(5) << "Port" << std::setw(12) << "RX Packets" 
-                 << std::setw(12) << "RX Bytes" << std::setw(12) << "Processed" << std::endl;
-    } else {
-        std::cout << std::left << std::setw(5) << "Port" << std::setw(12) << "RX Packets" 
-                 << std::setw(12) << "RX Bytes" << std::endl;
-    }
-    std::cout << "--------------------------------------------------------------------------------" << std::endl;
-    
-    for (uint16_t port = 0; port < num_ports && port < MAX_PORTS; port++) {
-        if (g_config.use_gpu) {
-            std::cout << std::left << std::setw(5) << port << std::setw(12) << g_metrics.ports[port].rx_packets
-                     << std::setw(12) << g_metrics.ports[port].rx_bytes
-                     << std::setw(12) << g_metrics.ports[port].processed_packets << std::endl;
-        } else {
-            std::cout << std::left << std::setw(5) << port << std::setw(12) << g_metrics.ports[port].rx_packets
-                     << std::setw(12) << g_metrics.ports[port].rx_bytes << std::endl;
-        }
-    }
-    std::cout << "================================================================================" << std::endl;
+    std::cout << std::endl;
 }
 
 /* Signal handler */
@@ -148,8 +118,15 @@ static void signal_handler(int signum)
 static bool init_gpu_processor()
 {
     if (!g_config.use_gpu || g_config.kernel_path[0] == '\0' || g_config.function_name[0] == '\0') {
+        std::cerr << "GPU processing disabled due to missing configuration" << std::endl;
         return false;
     }
+    
+    std::cout << "\033[1;34m[GPU DEBUG] Initializing GPU processor with:" << std::endl
+              << "- Kernel: " << g_config.kernel_path << std::endl
+              << "- Function: " << g_config.function_name << std::endl
+              << "- Device ID: " << g_config.device_id << std::endl
+              << "- Batch Size: " << g_config.batch_size << "\033[0m" << std::endl;
     
     try {
         // Create GPU processor configuration
@@ -158,6 +135,8 @@ static bool init_gpu_processor()
         config.max_batch_size = g_config.batch_size;
         config.use_zero_copy = true;  // Enable zero-copy for better performance
         config.enable_profiling = false;
+        
+        std::cout << "\033[1;34m[GPU DEBUG] Creating EventProcessor instance...\033[0m" << std::endl;
         
         // Create processor instance
         g_processor = std::make_unique<ebpf_gpu::EventProcessor>(config);
@@ -174,6 +153,8 @@ static bool init_gpu_processor()
         std::string kernel_path = g_config.kernel_path;
         std::string function_name = g_config.function_name;
         
+        std::cout << "\033[1;34m[GPU DEBUG] Loading kernel...\033[0m" << std::endl;
+        
         // Check file extension to determine loading method
         if (kernel_path.size() > 4 && kernel_path.substr(kernel_path.size()-4) == ".ptx") {
             // Load PTX file
@@ -186,14 +167,16 @@ static bool init_gpu_processor()
         }
         
         if (result != ebpf_gpu::ProcessingResult::Success) {
-            std::cerr << "Failed to load kernel: " << static_cast<int>(result) << std::endl;
+            std::cerr << "\033[1;31m[GPU ERROR] Failed to load kernel: " 
+                     << static_cast<int>(result) 
+                     << " (Error code: " << static_cast<int>(result) << ")\033[0m" << std::endl;
             return false;
         }
         
-        std::cout << "GPU processor initialized successfully" << std::endl;
+        std::cout << "\033[1;32m[SUCCESS] GPU acceleration enabled with kernel: " << function_name << "\033[0m" << std::endl;
         return true;
     } catch (const std::exception& e) {
-        std::cerr << "Error initializing GPU processor: " << e.what() << std::endl;
+        std::cerr << "\033[1;31m[ERROR] GPU initialization failed: " << e.what() << "\033[0m" << std::endl;
         return false;
     }
 }
@@ -205,6 +188,17 @@ static void main_loop(void)
     
     /* Initialize metrics */
     init_metrics();
+    
+    /* Print mode indicator */
+    if (g_config.use_gpu) {
+        std::cout << "\033[1;32m[GPU MODE] Processing packets with GPU acceleration\033[0m" << std::endl;
+    } else {
+        std::cout << "\033[1;33m[CPU MODE] Processing packets without GPU acceleration\033[0m" << std::endl;
+        std::cerr << "\033[1;33mReason for CPU mode: " 
+                  << (g_config.kernel_path[0] == '\0' ? "No kernel specified" : 
+                     (g_config.function_name[0] == '\0' ? "No function specified" : 
+                     "GPU initialization failed")) << "\033[0m" << std::endl;
+    }
     
     /* Pre-allocate packet array */
     dpdk_packet_t packets[MAX_PACKETS_PER_POLL];
@@ -358,6 +352,13 @@ static void print_usage(const char *program_name)
 /* Parse application arguments */
 static void parse_app_args(int argc, char *argv[])
 {
+    /* Debug: Print all received arguments */
+    std::cout << "\n--- Command Line Arguments Debug ---" << std::endl;
+    for (int i = 0; i < argc; i++) {
+        std::cout << "argv[" << i << "]: " << argv[i] << std::endl;
+    }
+    std::cout << "---------------------------------\n" << std::endl;
+
     /* Default configuration */
     g_config.use_gpu = false;  /* Disabled by default */
     g_config.device_id = -1;   /* Auto-select */
@@ -365,25 +366,33 @@ static void parse_app_args(int argc, char *argv[])
     g_config.kernel_path[0] = '\0';
     g_config.function_name[0] = '\0';
     
-    /* Find the EAL arguments separator */
+    /* DPDK EAL replaces -- with program name, so look for program name after initial args */
     int app_args_idx = 1;
+    const char* prog_name = strrchr(argv[0], '/');
+    prog_name = prog_name ? prog_name + 1 : argv[0];
+    
     for (; app_args_idx < argc; app_args_idx++) {
-        if (strcmp(argv[app_args_idx], "--") == 0) {
+        // Check if this arg matches the program name (replacing --)
+        if (strstr(argv[app_args_idx], prog_name) != NULL) {
             break;
         }
     }
     
     /* Process application arguments */
     if (app_args_idx < argc) {
+        std::cout << "Found app args starting at index: " << app_args_idx << std::endl;
         for (int i = app_args_idx + 1; i < argc; i++) {
+            std::cout << "Processing arg: " << argv[i] << std::endl;
             if (strncmp(argv[i], "--kernel=", 9) == 0) {
                 strncpy(g_config.kernel_path, argv[i] + 9, sizeof(g_config.kernel_path) - 1);
                 g_config.kernel_path[sizeof(g_config.kernel_path) - 1] = '\0';
                 g_config.use_gpu = true;  /* Enable GPU if kernel specified */
+                std::cout << "Setting kernel path: " << g_config.kernel_path << std::endl;
             } else if (strncmp(argv[i], "--function=", 11) == 0) {
                 strncpy(g_config.function_name, argv[i] + 11, sizeof(g_config.function_name) - 1);
                 g_config.function_name[sizeof(g_config.function_name) - 1] = '\0';
                 g_config.use_gpu = true;  /* Enable GPU if function specified */
+                std::cout << "Setting function name: " << g_config.function_name << std::endl;
             } else if (strcmp(argv[i], "--no-gpu") == 0) {
                 g_config.use_gpu = false;
             } else if (strncmp(argv[i], "--device=", 9) == 0) {
@@ -400,12 +409,26 @@ static void parse_app_args(int argc, char *argv[])
     
     /* Validate configuration */
     if (g_config.use_gpu) {
+        std::cout << "GPU config - Kernel: " << g_config.kernel_path << ", Function: " << g_config.function_name << std::endl;
+        
         /* Both kernel and function must be specified */
         if (g_config.kernel_path[0] == '\0' || g_config.function_name[0] == '\0') {
             std::cerr << "Error: Both --kernel and --function must be specified for GPU processing" << std::endl;
             print_usage(argv[0]);
             dpdk_cleanup();
             exit(EXIT_FAILURE);
+        }
+        
+        /* Check if kernel file exists and is readable */
+        FILE* f = fopen(g_config.kernel_path, "r");
+        if (f == NULL) {
+            std::cerr << "\033[1;31mWarning: Kernel file '" << g_config.kernel_path 
+                     << "' cannot be opened. GPU processing will be disabled.\033[0m" << std::endl;
+            std::cerr << "Check that the file exists and the path is correct." << std::endl;
+            g_config.use_gpu = false;
+        } else {
+            fclose(f);
+            std::cout << "Kernel file found: " << g_config.kernel_path << std::endl;
         }
     }
 }
