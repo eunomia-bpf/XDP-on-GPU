@@ -18,127 +18,77 @@ sudo apt update
 sudo apt install -y dpdk dpdk-dev libdpdk-dev
 ```
 
-### 2. Run the Test
+## DPDK Packet Processing Example
+
+The `dpdk_example.cpp` application demonstrates how to process packets with DPDK and optionally use eBPF GPU processing.
+
+### Building
+
+To build the DPDK example:
 
 ```bash
-# Run the automated test script
-sudo ./simple_test.sh
+# First make sure DPDK is installed on your system
+make dpdk_example
 ```
 
-The script will:
-- Compile the application
-- Set up hugepages
-- Test with null PMD (auto-generates packets)
-- Test with TAP interface (creates virtual network interface)
+### Running
 
-### 3. Manual Testing
+The application accepts both DPDK EAL options and application-specific options:
 
 ```bash
-# Compile manually
-gcc -I/usr/include/dpdk -I/usr/include/x86_64-linux-gnu/dpdk \
-    -include rte_config.h -march=native \
-    minimal_dpdk_example.c -o minimal_dpdk_example \
-    $(pkg-config --libs libdpdk)
-
-# Test with null PMD (auto-generates packets)
-sudo ./minimal_dpdk_example --vdev=net_null0 -l 0
-
-# Test with TAP interface
-sudo ./minimal_dpdk_example --vdev=net_tap0,iface=test0 -l 0
-# In another terminal: ping test0
+./dpdk_example [EAL options] -- [application options]
 ```
 
-## Understanding the Code
+Application options:
+- `--kernel=PATH`: Path to the CUDA kernel file (.cu or .ptx)
+- `--function=NAME`: CUDA kernel function name to use
+- `--no-gpu`: Disable GPU processing
+- `--device=ID`: GPU device ID to use (-1 for auto)
+- `--batch-size=SIZE`: Maximum batch size for GPU processing
+- `--help`: Display help message
 
-The `minimal_dpdk_example.c` shows:
+### Examples
 
-1. **DPDK Initialization**: Sets up the DPDK Environment Abstraction Layer (EAL)
-2. **Port Setup**: Configures virtual network ports
-3. **Packet Reception**: Captures packets using `rte_eth_rx_burst()`
-4. **Packet Processing**: Simple packet inspection and statistics
-5. **Memory Management**: Proper cleanup of packet buffers
+Run with a null PMD device and process packets using the simple_packet_filter CUDA kernel:
 
-## Virtual Device Types
-
-### null PMD
-- **Usage**: `--vdev=net_null0`
-- **Purpose**: Auto-generates packets for testing
-- **Good for**: Performance testing, basic functionality verification
-
-### TAP PMD
-- **Usage**: `--vdev=net_tap0,iface=test0`
-- **Purpose**: Creates a virtual network interface accessible from the host
-- **Good for**: Real packet testing, integration with host networking
-
-### Ring PMD
-- **Usage**: `--vdev=net_ring0`
-- **Purpose**: Creates ring-based packet sharing between applications
-- **Good for**: Inter-process communication, complex testing scenarios
-
-## Expected Output
-
-```
-=== Setting up DPDK test environment ===
-1. Compiling the DPDK application...
-✓ Compilation successful!
-2. Setting up hugepages...
-Hugepages already configured: 256
-3. Testing different virtual devices...
-
-=== Test 1: null PMD (auto-generates packets) ===
-Running for 5 seconds...
-Found 1 ports
-Device info: driver=net_null
-Port 0 MAC: 02 00 00 00 00 00
-Starting packet processing...
-...
-Core 0 processing packets. [Ctrl+C to quit]
-Received 32 packets on port 0 (total: 32)
-  Packet 0: length = 64 bytes
-  Packet 1: length = 64 bytes
-  Packet 2: length = 64 bytes
-Total packets processed: 1000
-...
-Test completed
-
-=== Test 2: TAP interface ===
-Creating TAP interface...
-Starting DPDK application with TAP interface...
-...
-✓ TAP interface 'test0' created successfully
-✓ TAP test completed
-
-=== Test Summary ===
-Both tests demonstrate DPDK packet processing with virtual devices.
-...
+```bash
+./dpdk_example --vdev=net_null0 -l 0 -- --kernel=examples/simple_packet_filter.cu --function=packet_filter
 ```
 
-## Next Steps
+Run with a TAP interface without GPU processing:
 
-This example provides a foundation for:
+```bash
+./dpdk_example --vdev=net_tap0,iface=test0 -l 0 -- --no-gpu
+```
 
-1. **Adding Custom Packet Processing**: Modify the packet processing logic in `lcore_main()`
-2. **Integration with Other Systems**: Use TAP interfaces to connect with real networks
-3. **Performance Testing**: Use null PMD for high-throughput testing
-4. **GPU Integration**: Add GPU processing to the packet handling pipeline
+## Available CUDA Kernels
 
-## Troubleshooting
+### simple_packet_filter.cu
 
-### Compilation Errors
-- Make sure DPDK is properly installed: `pkg-config --exists libdpdk`
-- Check include paths: `pkg-config --cflags libdpdk`
+This example demonstrates basic packet filtering:
 
-### Runtime Errors
-- **No hugepages**: Run `sudo ./simple_test.sh` or set up hugepages manually
-- **Permission denied**: Run with `sudo` or add user to appropriate groups
-- **No ports found**: Make sure to use `--vdev` parameter
+1. `packet_filter`: Filters TCP packets with destination port 80 (HTTP)
+2. `packet_counter`: Counts packets based on their size ranges
 
-### Common Issues
-- **CPU instruction errors**: The script tries different compilation flags automatically
-- **Interface creation fails**: Check if you have permissions to create network interfaces
+Usage:
 
-## Learn More
+```bash
+./dpdk_example --vdev=net_null0 -l 0 -- --kernel=examples/simple_packet_filter.cu --function=packet_filter
+```
 
-- [DPDK Documentation](https://doc.dpdk.org/)
-- [DPDK Programmer's Guide](https://doc.dpdk.org/guides/prog_guide/)
-- [Virtual Device Examples](https://doc.dpdk.org/guides/nics/) 
+Or:
+
+```bash
+./dpdk_example --vdev=net_null0 -l 0 -- --kernel=examples/simple_packet_filter.cu --function=packet_counter
+```
+
+## Implementation Notes
+
+The actual integration with the eBPF GPU processor is simulated in the current implementation. In a real-world scenario, you would:
+
+1. Initialize the eBPF GPU processor with the specified kernel and function
+2. Format packet data in a way that matches the kernel's expected input format
+3. Call the GPU processor with batches of packets
+4. Process the results from the GPU
+
+The example code structure is designed to make it easy to extend with real GPU processing in the future. 

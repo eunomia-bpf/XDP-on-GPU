@@ -165,7 +165,7 @@ static bool init_gpu_processor()
         // Print GPU device info
         auto device_info = g_processor->get_device_info();
         std::cout << "Using GPU: " << device_info.name << " (Device " << device_info.device_id << ")" << std::endl;
-        std::cout << "GPU Memory: " << (device_info.total_global_memory / (1024 * 1024)) << " MB" << std::endl;
+        std::cout << "GPU Memory: " << (device_info.total_memory / (1024 * 1024)) << " MB" << std::endl;
         std::cout << "CUDA Capability: " << device_info.compute_capability_major << "."
                  << device_info.compute_capability_minor << std::endl;
         
