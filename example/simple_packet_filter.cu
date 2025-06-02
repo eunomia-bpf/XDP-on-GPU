@@ -1,83 +1,64 @@
 /**
  * Simple Packet Filter Example for eBPF on GPU
  * 
- * This example demonstrates a basic packet filtering kernel that processes
- * raw packet data from DPDK.
+ * This example demonstrates a basic packet filtering kernel
+ * compatible with the eBPF-on-GPU library.
  */
 
+#include <cuda_runtime.h>
 #include <stdint.h>
+
+// Network event structure - must match the one used in the library
+struct NetworkEvent {
+    uint8_t* data;       // Pointer to packet data
+    uint32_t length;     // Packet length
+    uint64_t timestamp;  // Timestamp
+    uint32_t src_ip;     // Source IP
+    uint32_t dst_ip;     // Destination IP
+    uint16_t src_port;   // Source port
+    uint16_t dst_port;   // Destination port
+    uint8_t protocol;    // Protocol
+    uint8_t action;      // Action (0 = DROP, 1 = PASS)
+};
 
 /**
  * Simple packet filter kernel for DPDK integration
  * 
- * This kernel examines packet data and performs a simple filter operation:
- * - Looks for IPv4 packets (Ethernet type 0x0800)
- * - Checks for TCP packets (IP protocol 6)
- * - Checks if the destination port is 80 (HTTP)
+ * This kernel processes NetworkEvent structures and looks for:
+ * - TCP traffic (protocol 6)
+ * - HTTP traffic (destination port 80)
  * 
- * @param packets       Pointer to the buffer containing packet data
- * @param packet_sizes  Array of packet sizes
- * @param packet_count  Number of packets to process
- * @param results       Output array to store results (1 for match, 0 for no match)
+ * @param events      Pointer to array of NetworkEvent structures
+ * @param num_events  Number of events to process
  */
-extern "C" __global__ void packet_filter(
-    const uint8_t* packets,
-    const uint32_t* packet_sizes,
-    uint32_t packet_count,
-    uint32_t* results)
-{
-    // Get the global thread ID
-    uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+extern "C" __global__ void packet_filter(NetworkEvent* events, size_t num_events) {
+    // Get thread ID
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
     
-    // Make sure we don't go out of bounds
-    if (tid >= packet_count)
+    // Check bounds
+    if (tid >= num_events) {
         return;
-    
-    // Initialize result to 0 (no match)
-    results[tid] = 0;
-    
-    // Get size of this packet
-    uint32_t size = packet_sizes[tid];
-    
-    // Basic bounds checking - packet must be at least 34 bytes for our check
-    // (14 bytes Ethernet + 20 bytes IP header)
-    if (size < 34)
-        return;
-    
-    // Calculate offset to this packet in the buffer
-    uint32_t offset = 0;
-    for (uint32_t i = 0; i < tid; i++) {
-        offset += packet_sizes[i];
     }
     
-    // Get pointer to the current packet
-    const uint8_t* packet = packets + offset;
+    // Get event to process
+    NetworkEvent* event = &events[tid];
     
-    // Check for IPv4 (Ethernet type 0x0800)
-    if (packet[12] != 0x08 || packet[13] != 0x00)
-        return;
+    // Default to DROP
+    event->action = 0;
     
-    // IP header starts at offset 14
-    const uint8_t* ip_header = packet + 14;
-    
-    // Check for TCP (protocol 6)
-    if (ip_header[9] != 6)
-        return;
-    
-    // Get IP header length (lower 4 bits of byte 0, multiply by 4)
-    uint8_t ip_header_length = (ip_header[0] & 0x0F) * 4;
-    
-    // TCP header starts after IP header
-    const uint8_t* tcp_header = ip_header + ip_header_length;
-    
-    // Make sure we have enough bytes for TCP header
-    if ((uint32_t)(tcp_header - packet + 4) > size)
-        return;
-    
-    // Check destination port (HTTP = 80 = 0x0050)
-    if (tcp_header[2] == 0x00 && tcp_header[3] == 0x50) {
-        // Found HTTP traffic - mark as processed
-        results[tid] = 1;
+    // Simple filtering logic
+    if (event->protocol == 6) {  // TCP
+        if (event->dst_port == 80) {  // HTTP
+            event->action = 1;  // PASS
+        }
+        else if (event->dst_port == 443) {  // HTTPS
+            event->action = 1;  // PASS
+        }
+    }
+    else if (event->protocol == 17) {  // UDP
+        if (event->dst_port > 1024) {  // High ports
+            event->action = 1;  // PASS
+        }
     }
 }
 

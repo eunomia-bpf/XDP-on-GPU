@@ -20,6 +20,19 @@ extern "C" {
 
 #include "../include/ebpf_gpu_processor.hpp"
 
+/* NetworkEvent structure - must match the one used in the GPU kernel */
+struct NetworkEvent {
+    uint8_t* data;       // Pointer to packet data
+    uint32_t length;     // Packet length
+    uint64_t timestamp;  // Timestamp
+    uint32_t src_ip;     // Source IP
+    uint32_t dst_ip;     // Destination IP
+    uint16_t src_port;   // Source port
+    uint16_t dst_port;   // Destination port
+    uint8_t protocol;    // Protocol
+    uint8_t action;      // Action (0 = DROP, 1 = PASS)
+};
+
 /* Configuration */
 #define METRICS_INTERVAL 1
 #define MAX_PACKETS_PER_POLL 1024
@@ -262,78 +275,105 @@ static void main_loop(void)
             /* Process packets on GPU if enabled */
             uint32_t processed_count = 0;
             if (g_config.use_gpu && g_processor && gpu_buffer) {
-                // Prepare data for GPU processing
-                size_t total_size = 0;
+                // Prepare NetworkEvent structures for GPU processing
+                std::vector<NetworkEvent> events(nb_rx);
+                
+                // Fill in NetworkEvent structures
                 for (int i = 0; i < nb_rx; i++) {
-                    // Ensure we don't exceed buffer capacity
-                    if (total_size + packets[i].length <= max_buffer_size) {
-                        // Copy packet data to the GPU buffer
-                        memcpy(static_cast<char*>(gpu_buffer) + total_size, 
-                               packets[i].data, 
-                               packets[i].length);
+                    events[i].data = reinterpret_cast<uint8_t*>(packets[i].data);
+                    events[i].length = packets[i].length;
+                    events[i].timestamp = get_timestamp_sec() * 1000000; // Microseconds
+                    events[i].action = 0; // Default: DROP
+                    
+                    // Extract basic packet info if possible
+                    if (packets[i].length >= 34) { // Ethernet (14) + basic IP (20)
+                        const uint8_t* pkt = reinterpret_cast<const uint8_t*>(packets[i].data);
                         
-                        // Store packet size
-                        packet_sizes[i] = packets[i].length;
-                        total_size += packets[i].length;
-                    } else {
-                        // Buffer would overflow, stop adding packets
-                        std::cerr << "Warning: GPU buffer capacity exceeded, processing " << i << " of " << nb_rx << " packets" << std::endl;
-                        nb_rx = i;
-                        break;
-                    }
-                }
-                
-                if (nb_rx > 0) {
-                    // Clear result buffer before processing
-                    memset(results.data(), 0, nb_rx * sizeof(uint32_t));
-                
-                    // Set thread/block dimensions for CUDA kernel
-                    int threadsPerBlock = 256;
-                    int blocksPerGrid = (nb_rx + threadsPerBlock - 1) / threadsPerBlock;
-                
-                    // Process the packets on GPU
-                    auto process_result = g_processor->process_events(
-                        gpu_buffer,                // Packet data
-                        total_size,                // Total size of packet data
-                        nb_rx                      // Number of packets
-                    );
-                
-                    if (process_result == ebpf_gpu::ProcessingResult::Success) {
-                        // Count processed packets by checking the result array
-                        for (int i = 0; i < nb_rx; i++) {
-                            if (results[i] != 0) {
-                                processed_count++;
+                        // Check if IPv4 (Eth type 0x0800)
+                        if (pkt[12] == 0x08 && pkt[13] == 0x00) {
+                            const uint8_t* ip = pkt + 14;
+                            events[i].protocol = ip[9]; // Protocol
+                            
+                            // Extract IPs (network byte order)
+                            memcpy(&events[i].src_ip, ip + 12, 4);
+                            memcpy(&events[i].dst_ip, ip + 16, 4);
+                            
+                            // Get IP header length
+                            uint8_t ip_hdr_len = (ip[0] & 0x0F) * 4;
+                            
+                            // Get TCP/UDP ports if we have enough data
+                            if (events[i].protocol == 6 || events[i].protocol == 17) { // TCP or UDP
+                                if (packets[i].length >= 14 + ip_hdr_len + 4) { // Headers + first 4 bytes of TCP/UDP
+                                    const uint8_t* tp = ip + ip_hdr_len;
+                                    
+                                    // Get source & dest ports (in network byte order)
+                                    memcpy(&events[i].src_port, tp, 2);
+                                    memcpy(&events[i].dst_port, tp + 2, 2);
+                                }
                             }
                         }
-                    } else {
-                        std::cerr << "GPU processing failed with code: " << static_cast<int>(process_result) << std::endl;
                     }
                 }
-            }
-            
-            /* Count packets by port */
-            uint16_t packets_by_port[MAX_PORTS] = {0};
-            uint64_t bytes_by_port[MAX_PORTS] = {0};
-            uint32_t processed_by_port[MAX_PORTS] = {0};
-            
-            for (int i = 0; i < nb_rx; i++) {
-                uint16_t port = packets[i].port;
-                if (port < MAX_PORTS) {
-                    packets_by_port[port]++;
-                    bytes_by_port[port] += packets[i].length;
-                    
-                    // Count processed packets per port
-                    if (g_config.use_gpu && i < nb_rx && results[i] != 0) {
-                        processed_by_port[port]++;
+                
+                // Process the events on GPU
+                size_t buffer_size = events.size() * sizeof(NetworkEvent);
+                auto result = g_processor->process_events(events.data(), buffer_size, events.size());
+                
+                if (result == ebpf_gpu::ProcessingResult::Success) {
+                    // Count processed packets by checking the action field
+                    for (int i = 0; i < nb_rx; i++) {
+                        if (events[i].action != 0) {
+                            processed_count++;
+                        }
+                    }
+                } else {
+                    std::cerr << "GPU processing failed with code: " << static_cast<int>(result) << std::endl;
+                }
+                
+                /* Count packets by port */
+                uint16_t packets_by_port[MAX_PORTS] = {0};
+                uint64_t bytes_by_port[MAX_PORTS] = {0};
+                uint32_t processed_by_port[MAX_PORTS] = {0};
+                
+                for (int i = 0; i < nb_rx; i++) {
+                    uint16_t port = packets[i].port;
+                    if (port < MAX_PORTS) {
+                        packets_by_port[port]++;
+                        bytes_by_port[port] += packets[i].length;
+                        
+                        // Count processed packets per port
+                        if (events[i].action != 0) {
+                            processed_by_port[port]++;
+                        }
                     }
                 }
-            }
-            
-            /* Update metrics in batch */
-            for (uint16_t port = 0; port < MAX_PORTS; port++) {
-                if (packets_by_port[port] > 0) {
-                    update_metrics(port, packets_by_port[port], bytes_by_port[port], 
-                                  g_config.use_gpu ? processed_by_port[port] : 0);
+                
+                /* Update metrics in batch */
+                for (uint16_t port = 0; port < MAX_PORTS; port++) {
+                    if (packets_by_port[port] > 0) {
+                        update_metrics(port, packets_by_port[port], bytes_by_port[port], 
+                                      processed_by_port[port]);
+                    }
+                }
+            } else {
+                /* CPU processing mode */
+                /* Count packets by port */
+                uint16_t packets_by_port[MAX_PORTS] = {0};
+                uint64_t bytes_by_port[MAX_PORTS] = {0};
+                
+                for (int i = 0; i < nb_rx; i++) {
+                    uint16_t port = packets[i].port;
+                    if (port < MAX_PORTS) {
+                        packets_by_port[port]++;
+                        bytes_by_port[port] += packets[i].length;
+                    }
+                }
+                
+                /* Update metrics in batch */
+                for (uint16_t port = 0; port < MAX_PORTS; port++) {
+                    if (packets_by_port[port] > 0) {
+                        update_metrics(port, packets_by_port[port], bytes_by_port[port], 0);
+                    }
                 }
             }
             
