@@ -76,6 +76,12 @@ target_link_libraries(ebpf_gpu_processor
     CUDA::cudart
 )
 
+# Build the examples
+option(BUILD_EXAMPLES "Build example applications" ON)
+if(BUILD_EXAMPLES)
+    add_subdirectory(example)
+endif()
+
 # Test framework
 option(BUILD_TESTS "Build tests" ON)
 if(BUILD_TESTS)
