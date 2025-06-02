@@ -1,23 +1,24 @@
 /**
  * Simple Packet Filter Example for eBPF on GPU
  * 
- * This example demonstrates a basic packet filtering kernel that counts
- * packets with a specific pattern.
+ * This example demonstrates a basic packet filtering kernel that processes
+ * raw packet data from DPDK.
  */
 
 #include <stdint.h>
 
 /**
- * Simple packet filter kernel
+ * Simple packet filter kernel for DPDK integration
  * 
  * This kernel examines packet data and performs a simple filter operation:
- * - Looks for TCP packets (IP protocol 6)
+ * - Looks for IPv4 packets (Ethernet type 0x0800)
+ * - Checks for TCP packets (IP protocol 6)
  * - Checks if the destination port is 80 (HTTP)
  * 
- * @param packets     Pointer to the buffer containing packet data
- * @param packet_sizes Array of packet sizes
- * @param packet_count Number of packets to process
- * @param results     Output array to store results (1 for match, 0 for no match)
+ * @param packets       Pointer to the buffer containing packet data
+ * @param packet_sizes  Array of packet sizes
+ * @param packet_count  Number of packets to process
+ * @param results       Output array to store results (1 for match, 0 for no match)
  */
 extern "C" __global__ void packet_filter(
     const uint8_t* packets,
@@ -43,12 +44,13 @@ extern "C" __global__ void packet_filter(
     if (size < 34)
         return;
     
-    // Get offset to the current packet in the buffer
+    // Calculate offset to this packet in the buffer
     uint32_t offset = 0;
     for (uint32_t i = 0; i < tid; i++) {
         offset += packet_sizes[i];
     }
     
+    // Get pointer to the current packet
     const uint8_t* packet = packets + offset;
     
     // Check for IPv4 (Ethernet type 0x0800)
@@ -74,7 +76,7 @@ extern "C" __global__ void packet_filter(
     
     // Check destination port (HTTP = 80 = 0x0050)
     if (tcp_header[2] == 0x00 && tcp_header[3] == 0x50) {
-        // Found a match - HTTP traffic
+        // Found HTTP traffic - mark as processed
         results[tid] = 1;
     }
 }

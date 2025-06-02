@@ -12,6 +12,7 @@
 #include <string>
 #include <algorithm>
 #include <iomanip>
+#include <fstream>
 
 extern "C" {
 #include "dpdk_driver.h"
@@ -161,9 +162,23 @@ static bool init_gpu_processor()
             std::cout << "Loading PTX kernel from: " << kernel_path << std::endl;
             result = g_processor->load_kernel_from_file(kernel_path, function_name);
         } else {
-            // Load CUDA source
+            // Manual loading of CUDA source to avoid path issues
             std::cout << "Loading CUDA source from: " << kernel_path << std::endl;
-            result = g_processor->load_kernel_from_source(kernel_path, function_name);
+            
+            // Read the CUDA file into a string
+            std::ifstream file(kernel_path);
+            if (!file.is_open()) {
+                std::cerr << "\033[1;31m[ERROR] Failed to open kernel file: " << kernel_path << "\033[0m" << std::endl;
+                return false;
+            }
+            
+            std::string kernel_source((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+            file.close();
+            
+            std::cout << "Successfully read kernel file (" << kernel_source.size() << " bytes)" << std::endl;
+            
+            // Now load the source directly
+            result = g_processor->load_kernel_from_source(kernel_source, function_name);
         }
         
         if (result != ebpf_gpu::ProcessingResult::Success) {
@@ -260,33 +275,39 @@ static void main_loop(void)
                         // Store packet size
                         packet_sizes[i] = packets[i].length;
                         total_size += packets[i].length;
+                    } else {
+                        // Buffer would overflow, stop adding packets
+                        std::cerr << "Warning: GPU buffer capacity exceeded, processing " << i << " of " << nb_rx << " packets" << std::endl;
+                        nb_rx = i;
+                        break;
                     }
                 }
                 
-                // Process the packets on GPU
-                void* size_buffer = packet_sizes.data();
-                void* result_buffer = results.data();
+                if (nb_rx > 0) {
+                    // Clear result buffer before processing
+                    memset(results.data(), 0, nb_rx * sizeof(uint32_t));
                 
-                // Register host buffers for zero-copy
-                ebpf_gpu::EventProcessor::register_host_buffer(size_buffer, packet_sizes.size() * sizeof(uint32_t));
-                ebpf_gpu::EventProcessor::register_host_buffer(result_buffer, results.size() * sizeof(uint32_t));
+                    // Set thread/block dimensions for CUDA kernel
+                    int threadsPerBlock = 256;
+                    int blocksPerGrid = (nb_rx + threadsPerBlock - 1) / threadsPerBlock;
                 
-                // Call the GPU to process the packets
-                auto result = g_processor->process_events(gpu_buffer, total_size, nb_rx);
+                    // Process the packets on GPU
+                    auto process_result = g_processor->process_events(
+                        gpu_buffer,                // Packet data
+                        total_size,                // Total size of packet data
+                        nb_rx                      // Number of packets
+                    );
                 
-                // Unregister host buffers
-                ebpf_gpu::EventProcessor::unregister_host_buffer(size_buffer);
-                ebpf_gpu::EventProcessor::unregister_host_buffer(result_buffer);
-                
-                if (result == ebpf_gpu::ProcessingResult::Success) {
-                    // Count processed packets by checking the result array
-                    for (int i = 0; i < nb_rx; i++) {
-                        if (results[i] != 0) {
-                            processed_count++;
+                    if (process_result == ebpf_gpu::ProcessingResult::Success) {
+                        // Count processed packets by checking the result array
+                        for (int i = 0; i < nb_rx; i++) {
+                            if (results[i] != 0) {
+                                processed_count++;
+                            }
                         }
+                    } else {
+                        std::cerr << "GPU processing failed with code: " << static_cast<int>(process_result) << std::endl;
                     }
-                } else {
-                    std::cerr << "GPU processing failed with code: " << static_cast<int>(result) << std::endl;
                 }
             }
             
