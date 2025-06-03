@@ -27,16 +27,17 @@ target_include_directories(ebpf_gpu_processor PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
-# Add backend dependencies
+# Always link both backends (implementations will have appropriate stubs when disabled)
+target_link_libraries(ebpf_gpu_processor PUBLIC 
+    cuda_backend
+    opencl_backend
+)
+
+# Add additional backend-specific properties
 if(USE_CUDA_BACKEND)
-    target_link_libraries(ebpf_gpu_processor PUBLIC cuda_backend)
     set_target_properties(ebpf_gpu_processor PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
     )
-endif()
-
-if(USE_OPENCL_BACKEND)
-    target_link_libraries(ebpf_gpu_processor PUBLIC opencl_backend)
 endif()
 
 # Install targets

@@ -4,17 +4,22 @@
 #include <algorithm>
 #include <vector>
 #include <mutex>
+#include <iostream>
 
-#ifdef USE_CUDA_BACKEND
-#include <cuda_runtime.h>
-#include <cuda.h>
-#endif
-
-#ifdef USE_OPENCL_BACKEND
-#include <CL/cl.h>
-#endif
-
+// Forward declarations for backend-specific functions
 namespace ebpf_gpu {
+
+namespace cuda {
+    int get_device_count();
+    size_t get_available_memory(int device_id);
+    GpuDeviceInfo query_device_info(int device_id);
+}
+
+namespace opencl {
+    int get_device_count();
+    size_t get_available_memory(int device_id);
+    GpuDeviceInfo query_device_info(int device_id);
+}
 
 // Global mutex for device operations
 static std::mutex device_mutex;
@@ -46,7 +51,14 @@ int GpuDeviceManager::get_best_device(BackendType type) const {
     int device_count = get_device_count(type);
     if (device_count <= 0) {
         // No devices available for this backend
-        return -1;
+        // Try the other backend
+        BackendType other_type = (type == BackendType::CUDA) ? 
+                                  BackendType::OpenCL : BackendType::CUDA;
+        device_count = get_device_count(other_type);
+        if (device_count <= 0) {
+            return -1;  // No devices available at all
+        }
+        return 0;  // Return the first device of the other backend
     }
     
     // For now, just return the first device
@@ -57,130 +69,57 @@ int GpuDeviceManager::get_best_device(BackendType type) const {
 size_t GpuDeviceManager::get_available_memory(int device_id) const {
     std::lock_guard<std::mutex> lock(device_mutex);
     
-#ifdef USE_CUDA_BACKEND
-    if (cuda_device_count_ > 0) {
-        size_t free_memory = 0;
-        size_t total_memory = 0;
-        
-        if (device_id >= cuda_device_count_) {
-            throw std::runtime_error("Invalid CUDA device ID");
-        }
-        
-        cudaSetDevice(device_id);
-        cudaMemGetInfo(&free_memory, &total_memory);
-        
-        return free_memory;
-    }
-#endif
-
-#ifdef USE_OPENCL_BACKEND
+    // Try OpenCL backend first since we know it's available on this machine
     if (opencl_device_count_ > 0) {
-        // OpenCL doesn't have a direct way to query available memory
-        // Return a conservative estimate or query device-specific extensions
-        return 256 * 1024 * 1024; // 256 MB as a conservative default
+        // Adjust device_id for OpenCL if needed
+        int opencl_device_id = (device_id >= cuda_device_count_) ? 
+                               device_id - cuda_device_count_ : device_id;
+        
+        if (opencl_device_id < opencl_device_count_) {
+            return opencl::get_available_memory(opencl_device_id);
+        }
     }
-#endif
-
-    // No devices available or no backends enabled
+    
+    // Try CUDA backend if OpenCL failed or not available
+    if (cuda_device_count_ > 0 && device_id < cuda_device_count_) {
+        return cuda::get_available_memory(device_id);
+    }
+    
+    // No devices available or invalid device_id
     return 0;
 }
 
 GpuDeviceInfo GpuDeviceManager::query_device_info(int device_id) const {
     std::lock_guard<std::mutex> lock(device_mutex);
-    GpuDeviceInfo info;
     
-#ifdef USE_CUDA_BACKEND
-    if (cuda_device_count_ > 0) {
-        if (device_id >= cuda_device_count_) {
-            throw std::runtime_error("Invalid CUDA device ID");
-        }
-        
-        cudaDeviceProp prop;
-        cudaGetDeviceProperties(&prop, device_id);
-        
-        info.backend_type = BackendType::CUDA;
-        info.device_id = device_id;
-        info.name = prop.name;
-        info.compute_capability_major = prop.major;
-        info.compute_capability_minor = prop.minor;
-        info.clock_rate = prop.clockRate;
-        info.num_cores = prop.multiProcessorCount;
-        
-        // Get memory information
-        size_t free_memory = 0;
-        size_t total_memory = 0;
-        
-        cudaSetDevice(device_id);
-        cudaMemGetInfo(&free_memory, &total_memory);
-        
-        info.total_memory = total_memory;
-        info.available_memory = free_memory;
-        
-        return info;
-    }
-#endif
-
-#ifdef USE_OPENCL_BACKEND
+    // Try OpenCL backend first since we know it's available on this machine
     if (opencl_device_count_ > 0) {
-        // OpenCL device information
-        cl_int err;
-        cl_platform_id platform_id;
-        cl_device_id device;
+        // Adjust device_id for OpenCL if needed
+        int opencl_device_id = (device_id >= cuda_device_count_) ? 
+                               device_id - cuda_device_count_ : device_id;
         
-        // Get platform and device
-        err = clGetPlatformIDs(1, &platform_id, nullptr);
-        if (err != CL_SUCCESS) {
-            throw std::runtime_error("Failed to get OpenCL platform ID");
+        if (opencl_device_id < opencl_device_count_) {
+            try {
+                return opencl::query_device_info(opencl_device_id);
+            } catch (const std::exception& e) {
+                // Log the error
+                std::cerr << "OpenCL device query failed: " << e.what() << std::endl;
+            }
         }
-        
-        err = clGetDeviceIDs(platform_id, CL_DEVICE_TYPE_ALL, 1, &device, nullptr);
-        if (err != CL_SUCCESS) {
-            throw std::runtime_error("Failed to get OpenCL device ID");
-        }
-        
-        // Get device name
-        char device_name[256];
-        err = clGetDeviceInfo(device, CL_DEVICE_NAME, sizeof(device_name), device_name, nullptr);
-        if (err != CL_SUCCESS) {
-            throw std::runtime_error("Failed to get OpenCL device name");
-        }
-        
-        // Get compute units
-        cl_uint compute_units;
-        err = clGetDeviceInfo(device, CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(compute_units), &compute_units, nullptr);
-        if (err != CL_SUCCESS) {
-            throw std::runtime_error("Failed to get OpenCL compute units");
-        }
-        
-        // Get clock frequency
-        cl_uint clock_frequency;
-        err = clGetDeviceInfo(device, CL_DEVICE_MAX_CLOCK_FREQUENCY, sizeof(clock_frequency), &clock_frequency, nullptr);
-        if (err != CL_SUCCESS) {
-            throw std::runtime_error("Failed to get OpenCL clock frequency");
-        }
-        
-        // Get global memory
-        cl_ulong global_memory;
-        err = clGetDeviceInfo(device, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(global_memory), &global_memory, nullptr);
-        if (err != CL_SUCCESS) {
-            throw std::runtime_error("Failed to get OpenCL global memory");
-        }
-        
-        info.backend_type = BackendType::OpenCL;
-        info.device_id = device_id;
-        info.name = device_name;
-        info.compute_capability_major = 0; // Not applicable for OpenCL
-        info.compute_capability_minor = 0; // Not applicable for OpenCL
-        info.clock_rate = clock_frequency * 1000; // Convert MHz to kHz for consistency
-        info.num_cores = compute_units;
-        info.total_memory = global_memory;
-        info.available_memory = global_memory / 2; // Conservative estimate
-        
-        return info;
     }
-#endif
-
-    // If no backends are available, return a stub device info
+    
+    // Try CUDA backend if OpenCL failed or not available
+    if (cuda_device_count_ > 0 && device_id < cuda_device_count_) {
+        try {
+            return cuda::query_device_info(device_id);
+        } catch (const std::exception& e) {
+            // Log the error but continue to try OpenCL
+            std::cerr << "CUDA device query failed: " << e.what() << std::endl;
+        }
+    }
+    
+    // If no backends are available or all queries failed, return a stub device info
+    GpuDeviceInfo info;
     info.backend_type = BackendType::CUDA; // Default
     info.device_id = -1;
     info.name = "Stub Device (No GPU backends available)";
@@ -197,50 +136,20 @@ GpuDeviceInfo GpuDeviceManager::query_device_info(int device_id) const {
 void GpuDeviceManager::initialize_devices() {
     std::lock_guard<std::mutex> lock(device_mutex);
     
+    // Initialize OpenCL devices first (more likely to be available)
+    opencl_device_count_ = opencl::get_device_count();
+    
     // Initialize CUDA devices
-    cuda_device_count_ = 0;
+    cuda_device_count_ = cuda::get_device_count();
     
-#ifdef USE_CUDA_BACKEND
-    // Initialize CUDA driver
-    CUresult cu_result = cuInit(0);
-    if (cu_result != CUDA_SUCCESS) {
-        // Failed to initialize CUDA driver, but don't throw an exception
-        // as we might still have OpenCL available
+    // If no devices available, print a warning
+    if (cuda_device_count_ == 0 && opencl_device_count_ == 0) {
+        std::cerr << "Warning: No GPU devices detected for any backend" << std::endl;
+    } else {
+        std::cout << "Detected GPU devices: "
+                  << cuda_device_count_ << " CUDA, "
+                  << opencl_device_count_ << " OpenCL" << std::endl;
     }
-    else {
-        // Get CUDA device count
-        cudaError_t cuda_result = cudaGetDeviceCount(&cuda_device_count_);
-        if (cuda_result != cudaSuccess) {
-            cuda_device_count_ = 0;
-        }
-    }
-#endif
-
-    // Initialize OpenCL devices
-    opencl_device_count_ = 0;
-    
-#ifdef USE_OPENCL_BACKEND
-    cl_int err;
-    cl_uint num_platforms;
-    
-    // Get number of platforms
-    err = clGetPlatformIDs(0, nullptr, &num_platforms);
-    if (err == CL_SUCCESS && num_platforms > 0) {
-        std::vector<cl_platform_id> platforms(num_platforms);
-        err = clGetPlatformIDs(num_platforms, platforms.data(), nullptr);
-        
-        if (err == CL_SUCCESS) {
-            for (cl_uint i = 0; i < num_platforms; i++) {
-                cl_uint num_devices;
-                err = clGetDeviceIDs(platforms[i], CL_DEVICE_TYPE_ALL, 0, nullptr, &num_devices);
-                
-                if (err == CL_SUCCESS) {
-                    opencl_device_count_ += num_devices;
-                }
-            }
-        }
-    }
-#endif
 }
 
 } // namespace ebpf_gpu 

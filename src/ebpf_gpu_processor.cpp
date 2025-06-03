@@ -202,7 +202,7 @@ ProcessingResult EventProcessor::Impl::process_events_single_batch(void* events_
     // Ensure device buffer is large enough
     if (ensure_buffer_size(buffer_size) != ProcessingResult::Success) {
             return ProcessingResult::DeviceError;
-    }
+        }
     
     // Copy data to device
     backend_->copy_host_to_device_async(device_buffer_, events_buffer, buffer_size, stream);
@@ -242,8 +242,8 @@ ProcessingResult EventProcessor::Impl::process_events_multi_batch_pipelined(void
     
     // Ensure that each stream has a buffer of adequate size
     ProcessingResult buffer_result = ensure_stream_buffers(buffer_size / num_streams + event_size);
-    if (buffer_result != ProcessingResult::Success) {
-        return buffer_result;
+        if (buffer_result != ProcessingResult::Success) {
+            return buffer_result;
     }
     
     // Check if we can use zero-copy memory
@@ -395,8 +395,8 @@ void* EventProcessor::Impl::get_available_stream() {
     void* stream = streams_[current_stream_idx_];
     current_stream_idx_ = (current_stream_idx_ + 1) % streams_.size();
     return stream;
-}
-
+    }
+    
 // Cleanup all CUDA streams
 void EventProcessor::Impl::cleanup_streams() {
     // Destroy all streams
@@ -465,7 +465,7 @@ ProcessingResult EventProcessor::Impl::ensure_stream_buffers(size_t required_buf
             // Free old buffer if it exists
             if (device_buffers_[i]) {
                 backend_->free_device_memory(device_buffers_[i]);
-            }
+    }
             
             // Store new buffer
             device_buffers_[i] = new_buffer;
@@ -544,7 +544,7 @@ bool EventProcessor::is_ready() const {
 
 BackendType EventProcessor::get_backend_type() const {
     return pimpl_->get_backend_type();
-}
+                }
 
 void* EventProcessor::allocate_pinned_buffer(size_t size) {
     // Implementation uses static GPU backend to handle this
@@ -646,8 +646,8 @@ int select_best_device(size_t min_memory) {
         if (available_memory >= min_memory) {
             return device_id;
         }
-    }
-    
+}
+
     // No suitable device found
     return -1;
 }

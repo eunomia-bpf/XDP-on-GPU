@@ -16,7 +16,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 
 # Backend options
 option(USE_CUDA_BACKEND "Enable CUDA backend" ON)
-option(USE_OPENCL_BACKEND "Enable OpenCL backend" OFF)
+option(USE_OPENCL_BACKEND "Enable OpenCL backend" ON)
 option(AUTO_DETECT_BACKENDS "Auto-detect available backends" ON)
 
 # Auto-detection of backends if enabled
@@ -33,15 +33,44 @@ if(AUTO_DETECT_BACKENDS)
         set(USE_CUDA_BACKEND OFF)
     endif()
 
-    # Try to find OpenCL
+    # Try to find OpenCL - search more widely for Intel GPUs
     find_package(OpenCL QUIET)
     if(OpenCL_FOUND)
         message(STATUS "OpenCL found: ${OpenCL_LIBRARIES}")
         set(OPENCL_AVAILABLE TRUE)
     else()
-        message(STATUS "OpenCL not found, disabling OpenCL backend")
-        set(OPENCL_AVAILABLE FALSE)
-        set(USE_OPENCL_BACKEND OFF)
+        # Try alternative paths for OpenCL on different systems
+        if(UNIX)
+            # On Linux, try additional search paths
+            find_library(OPENCL_LIB OpenCL 
+                PATHS
+                /usr/lib
+                /usr/lib/x86_64-linux-gnu
+                /usr/local/lib
+                /usr/lib64
+                /opt/intel/opencl
+            )
+            find_path(OPENCL_INCLUDE CL/cl.h
+                PATHS
+                /usr/include
+                /usr/local/include
+                /opt/intel/opencl/include
+            )
+            if(OPENCL_LIB AND OPENCL_INCLUDE)
+                set(OpenCL_LIBRARIES ${OPENCL_LIB})
+                set(OpenCL_INCLUDE_DIRS ${OPENCL_INCLUDE})
+                set(OPENCL_AVAILABLE TRUE)
+                message(STATUS "OpenCL found in alternative paths: ${OPENCL_LIB}")
+            else()
+                message(STATUS "OpenCL not found, disabling OpenCL backend")
+                set(OPENCL_AVAILABLE FALSE)
+                set(USE_OPENCL_BACKEND OFF)
+            endif()
+        else()
+            message(STATUS "OpenCL not found, disabling OpenCL backend")
+            set(OPENCL_AVAILABLE FALSE)
+            set(USE_OPENCL_BACKEND OFF)
+        endif()
     endif()
 
     # Enable at least one backend if available
@@ -108,7 +137,10 @@ endif()
 
 # Setup OpenCL backend if enabled
 if(USE_OPENCL_BACKEND)
-    find_package(OpenCL REQUIRED)
+    if(NOT OPENCL_AVAILABLE)
+        find_package(OpenCL REQUIRED)
+    endif()
+    
     add_definitions(-DUSE_OPENCL_BACKEND)
     message(STATUS "OpenCL include dirs: ${OpenCL_INCLUDE_DIRS}")
     message(STATUS "OpenCL libraries: ${OpenCL_LIBRARIES}")
