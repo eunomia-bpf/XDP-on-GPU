@@ -1,0 +1,37 @@
+.version 6.0
+.target sm_30
+.address_size 64
+
+.visible .entry simple_kernel(
+    .param .u64 input_ptr,
+    .param .u64 output_ptr,
+    .param .u32 length
+)
+{
+    .reg .u64 %rd<5>;
+    .reg .u32 %r<5>;
+    
+    ld.param.u64 %rd1, [input_ptr];
+    ld.param.u64 %rd2, [output_ptr];
+    ld.param.u32 %r1, [length];
+    
+    // Get thread ID
+    mov.u32 %r2, %ctaid.x;
+    mov.u32 %r3, %ntid.x;
+    mad.lo.u32 %r4, %r2, %r3, %tid.x;
+    
+    // Check if thread ID is less than length
+    setp.ge.u32 %p1, %r4, %r1;
+    @%p1 bra EXIT;
+    
+    // Compute input/output addresses
+    cvta.to.global.u64 %rd3, %rd1;
+    cvta.to.global.u64 %rd4, %rd2;
+    
+    // Read input, set output to 1 (simple test pass condition)
+    mov.u32 %r5, 1;
+    st.global.u32 [%rd4], %r5;
+    
+EXIT:
+    ret;
+} 

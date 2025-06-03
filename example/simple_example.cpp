@@ -9,8 +9,8 @@
 #include <random>
 
 // Include the eBPF GPU processor header
-#include "ebpf_gpu_processor.hpp"
-#include "kernel_loader.hpp"
+#include "../include/ebpf_gpu_processor.hpp"
+#include "../include/kernel_loader.hpp"
 
 // Structure representing a simple packet
 struct SimplePacket {

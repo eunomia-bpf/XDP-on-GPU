@@ -12,6 +12,13 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(Catch2)
 
+# Copy test PTX file to build directory
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_ptx.ptx
+    ${CMAKE_CURRENT_BINARY_DIR}/test_ptx.ptx
+    COPYONLY
+)
+
 # Set up backend-specific test configuration
 if(USE_CUDA)
     # Generate PTX from CUDA kernels at compile time

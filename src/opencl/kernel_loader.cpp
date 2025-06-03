@@ -1,5 +1,3 @@
-#ifdef USE_OPENCL_BACKEND
-
 #include "../../include/kernel_loader.hpp"
 #include <CL/cl.h>
 #include <fstream>
@@ -82,121 +80,156 @@ BackendType get_backend_type() {
 
 // GpuModule implementation for OpenCL
 GpuModule::GpuModule(const std::string& ir_code) 
-    : program_(nullptr), context_(nullptr), device_(nullptr) {
-    cl_int err;
-    
-    // Get device and context
-    if (!get_opencl_device_and_context(device_, context_)) {
-        throw std::runtime_error("Failed to get OpenCL device and context");
-    }
-    
-    // Create program from source
-    const char* source_ptr = ir_code.c_str();
-    size_t source_len = ir_code.length();
-    
-    program_ = clCreateProgramWithSource(context_, 1, &source_ptr, &source_len, &err);
-    if (err != CL_SUCCESS) {
-        std::cerr << "OpenCL: Failed to create program from source: " << err << std::endl;
-        throw std::runtime_error("Failed to create OpenCL program");
-    }
-    
-    // Build the program
-    err = clBuildProgram(program_, 1, &device_, nullptr, nullptr, nullptr);
-    if (err != CL_SUCCESS) {
-        // If there was a build error, get the build log
-        size_t log_size;
-        clGetProgramBuildInfo(program_, device_, CL_PROGRAM_BUILD_LOG, 0, nullptr, &log_size);
-        
-        std::vector<char> log(log_size + 1);
-        clGetProgramBuildInfo(program_, device_, CL_PROGRAM_BUILD_LOG, log_size, log.data(), nullptr);
-        log[log_size] = '\0';
-        
-        std::cerr << "OpenCL: Program build failed: " << log.data() << std::endl;
-        clReleaseProgram(program_);
-        program_ = nullptr;
-        throw std::runtime_error("Failed to build OpenCL program");
-    }
+    : backend_type_(BackendType::OpenCL), module_handle_(nullptr), 
+      context_handle_(nullptr), device_handle_(nullptr) {
+    initialize_from_ir(ir_code);
 }
 
 GpuModule::GpuModule(const std::vector<char>& ir_data) 
-    : program_(nullptr), context_(nullptr), device_(nullptr) {
+    : backend_type_(BackendType::OpenCL), module_handle_(nullptr), 
+      context_handle_(nullptr), device_handle_(nullptr) {
     if (ir_data.empty()) {
         throw std::runtime_error("Empty IR data");
     }
     
     std::string ir_code(ir_data.begin(), ir_data.end());
-    *this = GpuModule(ir_code);
+    initialize_from_ir(ir_code);
+}
+
+void GpuModule::initialize_from_ir(const std::string& ir_code) {
+    cl_int err;
+    
+    if (ir_code.empty()) {
+        throw std::runtime_error("Empty OpenCL code");
+    }
+    
+    // Get device and context
+    cl_device_id device;
+    cl_context context;
+    if (!get_opencl_device_and_context(device, context)) {
+        throw std::runtime_error("Failed to get OpenCL device and context");
+    }
+    
+    // Store handles for cleanup
+    device_handle_ = device;
+    context_handle_ = context;
+    
+    // Create program from source
+    const char* source_ptr = ir_code.c_str();
+    size_t source_len = ir_code.length();
+    
+    cl_program program = clCreateProgramWithSource(context, 1, &source_ptr, &source_len, &err);
+    if (err != CL_SUCCESS) {
+        std::cerr << "OpenCL: Failed to create program from source: " << err << std::endl;
+        clReleaseContext(context);
+        throw std::runtime_error("Failed to create OpenCL program");
+    }
+    
+    // Build the program
+    err = clBuildProgram(program, 1, &device, nullptr, nullptr, nullptr);
+    if (err != CL_SUCCESS) {
+        // If there was a build error, get the build log
+        size_t log_size;
+        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, nullptr, &log_size);
+        
+        std::vector<char> log(log_size + 1);
+        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, log_size, log.data(), nullptr);
+        log[log_size] = '\0';
+        
+        std::cerr << "OpenCL: Program build failed: " << log.data() << std::endl;
+        clReleaseProgram(program);
+        clReleaseContext(context);
+        throw std::runtime_error("Failed to build OpenCL program");
+    }
+    
+    module_handle_ = program;
 }
 
 GpuModule::~GpuModule() {
-    for (auto kernel : kernels_) {
-        if (kernel) {
-            clReleaseKernel(kernel);
+    cleanup();
+}
+
+void GpuModule::cleanup() {
+    // Release all kernels in the cache
+    for (auto& pair : function_cache_) {
+        if (pair.second) {
+            clReleaseKernel(static_cast<cl_kernel>(pair.second));
         }
     }
+    function_cache_.clear();
     
-    if (program_) {
-        clReleaseProgram(program_);
+    // Release program
+    if (module_handle_) {
+        clReleaseProgram(static_cast<cl_program>(module_handle_));
+        module_handle_ = nullptr;
     }
     
-    if (context_) {
-        clReleaseContext(context_);
+    // Release context
+    if (context_handle_) {
+        clReleaseContext(static_cast<cl_context>(context_handle_));
+        context_handle_ = nullptr;
     }
+    
+    // No need to release device, it's managed by OpenCL runtime
+    device_handle_ = nullptr;
 }
 
 GpuModule::GpuModule(GpuModule&& other) noexcept
-    : program_(other.program_), context_(other.context_), device_(other.device_), 
-      kernels_(std::move(other.kernels_)) {
-    other.program_ = nullptr;
-    other.context_ = nullptr;
-    other.device_ = nullptr;
+    : backend_type_(other.backend_type_),
+      module_handle_(other.module_handle_),
+      context_handle_(other.context_handle_),
+      device_handle_(other.device_handle_),
+      function_cache_(std::move(other.function_cache_)) {
+    other.module_handle_ = nullptr;
+    other.context_handle_ = nullptr;
+    other.device_handle_ = nullptr;
 }
 
 GpuModule& GpuModule::operator=(GpuModule&& other) noexcept {
     if (this != &other) {
-        // Clean up existing resources
-        for (auto kernel : kernels_) {
-            if (kernel) {
-                clReleaseKernel(kernel);
-            }
-        }
+        cleanup();
         
-        if (program_) {
-            clReleaseProgram(program_);
-        }
+        backend_type_ = other.backend_type_;
+        module_handle_ = other.module_handle_;
+        context_handle_ = other.context_handle_;
+        device_handle_ = other.device_handle_;
+        function_cache_ = std::move(other.function_cache_);
         
-        if (context_) {
-            clReleaseContext(context_);
-        }
-        
-        // Move resources from other
-        program_ = other.program_;
-        context_ = other.context_;
-        device_ = other.device_;
-        kernels_ = std::move(other.kernels_);
-        
-        // Reset other
-        other.program_ = nullptr;
-        other.context_ = nullptr;
-        other.device_ = nullptr;
+        other.module_handle_ = nullptr;
+        other.context_handle_ = nullptr;
+        other.device_handle_ = nullptr;
     }
     return *this;
 }
 
-cl_kernel GpuModule::get_function(const std::string& function_name) const {
+GenericHandle GpuModule::get() const noexcept {
+    return module_handle_;
+}
+
+bool GpuModule::is_valid() const noexcept {
+    return module_handle_ != nullptr;
+}
+
+FunctionHandle GpuModule::get_function(const std::string& function_name) const {
     if (!is_valid()) {
         throw std::runtime_error("Invalid OpenCL program");
     }
     
+    // Check cache first
+    auto it = function_cache_.find(function_name);
+    if (it != function_cache_.end()) {
+        return it->second;
+    }
+    
     cl_int err;
-    cl_kernel kernel = clCreateKernel(program_, function_name.c_str(), &err);
+    cl_kernel kernel = clCreateKernel(static_cast<cl_program>(module_handle_), function_name.c_str(), &err);
     if (err != CL_SUCCESS) {
         std::cerr << "OpenCL: Failed to create kernel '" << function_name << "': " << err << std::endl;
         return nullptr;
     }
     
-    // Store the kernel for cleanup
-    kernels_.push_back(kernel);
+    // Store the kernel in cache
+    function_cache_[function_name] = kernel;
     
     return kernel;
 }
@@ -270,6 +303,4 @@ bool KernelLoader::validate_ir(const std::string& ir_code) {
             ir_code.find("kernel") != std::string::npos);
 }
 
-} // namespace ebpf_gpu
-
-#endif // USE_OPENCL_BACKEND 
+} // namespace ebpf_gpu 

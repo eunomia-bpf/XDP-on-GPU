@@ -3,15 +3,8 @@
 #include <string>
 #include <memory>
 #include <vector>
-
-// Include appropriate headers based on backend
-#ifdef USE_CUDA_BACKEND
-#include <cuda.h>
-#endif
-
-#ifdef USE_OPENCL_BACKEND
-#include <CL/cl.h>
-#endif
+#include <functional>
+#include <unordered_map>
 
 namespace ebpf_gpu {
 
@@ -25,11 +18,11 @@ enum class BackendType {
 // Get the current backend type
 BackendType get_backend_type();
 
-// Forward declarations
-class GpuModule;
+// Forward declaration for backend-specific handles
+using GenericHandle = void*;
+using FunctionHandle = void*;
 
-#ifdef USE_CUDA_BACKEND
-// CUDA-specific implementation
+// Unified GPU Module class
 class GpuModule {
 public:
     explicit GpuModule(const std::string& ir_code);
@@ -42,56 +35,23 @@ public:
     GpuModule(GpuModule&& other) noexcept;
     GpuModule& operator=(GpuModule&& other) noexcept;
     
-    CUmodule get() const noexcept { return module_; }
-    CUfunction get_function(const std::string& function_name) const;
+    GenericHandle get() const noexcept;
+    FunctionHandle get_function(const std::string& function_name) const;
     
-    bool is_valid() const noexcept { return module_ != nullptr; }
+    bool is_valid() const noexcept;
 
 private:
-    CUmodule module_;
+    BackendType backend_type_;
+    GenericHandle module_handle_ = nullptr;
+    mutable std::unordered_map<std::string, FunctionHandle> function_cache_;
+    
+    // Context handles for OpenCL
+    GenericHandle context_handle_ = nullptr;
+    GenericHandle device_handle_ = nullptr;
+    
+    void cleanup();
+    void initialize_from_ir(const std::string& ir_code);
 };
-#elif defined(USE_OPENCL_BACKEND)
-// OpenCL-specific implementation
-class GpuModule {
-public:
-    explicit GpuModule(const std::string& ir_code);
-    explicit GpuModule(const std::vector<char>& ir_data);
-    ~GpuModule();
-    
-    // Non-copyable, movable
-    GpuModule(const GpuModule&) = delete;
-    GpuModule& operator=(const GpuModule&) = delete;
-    GpuModule(GpuModule&& other) noexcept;
-    GpuModule& operator=(GpuModule&& other) noexcept;
-    
-    cl_program get() const noexcept { return program_; }
-    cl_kernel get_function(const std::string& function_name) const;
-    
-    bool is_valid() const noexcept { return program_ != nullptr; }
-
-private:
-    cl_program program_;
-    cl_context context_;
-    cl_device_id device_;
-    mutable std::vector<cl_kernel> kernels_; // Cache for created kernels
-};
-#else
-// Fallback implementation for when no backend is defined
-class GpuModule {
-public:
-    explicit GpuModule(const std::string& ir_code) {}
-    explicit GpuModule(const std::vector<char>& ir_data) {}
-    ~GpuModule() {}
-    
-    GpuModule(const GpuModule&) = delete;
-    GpuModule& operator=(const GpuModule&) = delete;
-    GpuModule(GpuModule&& other) noexcept = default;
-    GpuModule& operator=(GpuModule&& other) noexcept = default;
-    
-    void* get_function(const std::string& function_name) const { return nullptr; }
-    bool is_valid() const noexcept { return false; }
-};
-#endif
 
 class KernelLoader {
 public:
@@ -134,10 +94,5 @@ public:
 private:
     std::vector<char> read_ir_file(const std::string& file_path) const;
 };
-
-// Compatibility typedefs for backward compatibility
-#ifdef USE_CUDA_BACKEND
-using CudaModule = GpuModule;
-#endif
 
 } // namespace ebpf_gpu 
