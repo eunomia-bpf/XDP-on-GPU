@@ -58,14 +58,34 @@ std::unique_ptr<GpuBackend> create_stub_backend() {
 
 std::unique_ptr<GpuBackend> create_backend(BackendType type) {
     try {
+        std::cout << "Debug: Attempting to create backend of type: " 
+                  << (type == BackendType::CUDA ? "CUDA" : "OpenCL") << std::endl;
+        
         switch (type) {
             case BackendType::CUDA:
             #ifdef USE_CUDA_BACKEND
-                return create_cuda_backend();
+                try {
+                    return create_cuda_backend();
+                } catch (const std::exception& e) {
+                    std::cerr << "Error creating CUDA backend: " << e.what() << std::endl;
+                    #ifdef USE_OPENCL_BACKEND
+                    std::cout << "CUDA backend failed, falling back to OpenCL" << std::endl;
+                    return create_opencl_backend();
+                    #else
+                    std::cout << "No functional GPU backends available, using stub backend" << std::endl;
+                    return create_stub_backend();
+                    #endif
+                }
             #elif defined(USE_OPENCL_BACKEND)
                 // Fallback to OpenCL if CUDA not available but OpenCL is
                 std::cout << "CUDA backend requested but not available, falling back to OpenCL" << std::endl;
-                return create_opencl_backend();
+                try {
+                    return create_opencl_backend();
+                } catch (const std::exception& e) {
+                    std::cerr << "Error creating OpenCL backend: " << e.what() << std::endl;
+                    std::cout << "No functional GPU backends available, using stub backend" << std::endl;
+                    return create_stub_backend();
+                }
             #else
                 std::cout << "No GPU backends available, using stub backend" << std::endl;
                 return create_stub_backend();
@@ -73,11 +93,28 @@ std::unique_ptr<GpuBackend> create_backend(BackendType type) {
             
             case BackendType::OpenCL:
             #ifdef USE_OPENCL_BACKEND
-                return create_opencl_backend();
+                try {
+                    return create_opencl_backend();
+                } catch (const std::exception& e) {
+                    std::cerr << "Error creating OpenCL backend: " << e.what() << std::endl;
+                    #ifdef USE_CUDA_BACKEND
+                    std::cout << "OpenCL backend failed, falling back to CUDA" << std::endl;
+                    return create_cuda_backend();
+                    #else
+                    std::cout << "No functional GPU backends available, using stub backend" << std::endl;
+                    return create_stub_backend();
+                    #endif
+                }
             #elif defined(USE_CUDA_BACKEND)
                 // Fallback to CUDA if OpenCL not available but CUDA is
                 std::cout << "OpenCL backend requested but not available, falling back to CUDA" << std::endl;
-                return create_cuda_backend();
+                try {
+                    return create_cuda_backend();
+                } catch (const std::exception& e) {
+                    std::cerr << "Error creating CUDA backend: " << e.what() << std::endl;
+                    std::cout << "No functional GPU backends available, using stub backend" << std::endl;
+                    return create_stub_backend();
+                }
             #else
                 std::cout << "No GPU backends available, using stub backend" << std::endl;
                 return create_stub_backend();

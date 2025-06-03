@@ -145,33 +145,57 @@ GpuDeviceInfo query_device_info(int device_id) {
     cl_device_id device = devices[device_id];
     cl_int err;
     
-    // Get device name
-    char device_name[256] = {0};
+    // Get device name using a more robust approach
+    std::vector<char> device_name_buffer;
     size_t name_size = 0;
+    
+    // First get the required size
     err = clGetDeviceInfo(device, CL_DEVICE_NAME, 0, nullptr, &name_size);
     if (err != CL_SUCCESS) {
         std::cerr << "OpenCL: Failed to get device name size: " << err << std::endl;
         throw std::runtime_error("Failed to get OpenCL device name size");
     }
     
-    if (name_size > sizeof(device_name)) {
-        name_size = sizeof(device_name);
-    }
+    // Allocate buffer with additional space for null terminator
+    device_name_buffer.resize(name_size + 1, 0);
     
-    err = clGetDeviceInfo(device, CL_DEVICE_NAME, name_size, device_name, nullptr);
+    // Now get the actual name
+    err = clGetDeviceInfo(device, CL_DEVICE_NAME, name_size, device_name_buffer.data(), nullptr);
     if (err != CL_SUCCESS) {
         std::cerr << "OpenCL: Failed to get device name: " << err << std::endl;
         throw std::runtime_error("Failed to get OpenCL device name");
     }
     
-    // Get device vendor
-    char device_vendor[256] = {0};
-    err = clGetDeviceInfo(device, CL_DEVICE_VENDOR, sizeof(device_vendor), 
-                         device_vendor, nullptr);
+    // Ensure null termination
+    device_name_buffer[name_size] = '\0';
+    
+    // Get device vendor using the same robust approach
+    std::vector<char> device_vendor_buffer;
+    size_t vendor_size = 0;
+    
+    // First get the required size
+    err = clGetDeviceInfo(device, CL_DEVICE_VENDOR, 0, nullptr, &vendor_size);
     if (err != CL_SUCCESS) {
-        std::cerr << "OpenCL: Failed to get device vendor: " << err << std::endl;
-        // Not critical, just use empty string
-        device_vendor[0] = '\0';
+        std::cerr << "OpenCL: Failed to get device vendor size: " << err << std::endl;
+        // Not critical, use empty string
+        vendor_size = 0;
+    }
+    
+    std::string vendor_str;
+    if (vendor_size > 0) {
+        // Allocate buffer with additional space for null terminator
+        device_vendor_buffer.resize(vendor_size + 1, 0);
+        
+        // Now get the actual vendor
+        err = clGetDeviceInfo(device, CL_DEVICE_VENDOR, vendor_size, device_vendor_buffer.data(), nullptr);
+        if (err != CL_SUCCESS) {
+            std::cerr << "OpenCL: Failed to get device vendor: " << err << std::endl;
+            // Not critical, use empty string
+        } else {
+            // Ensure null termination
+            device_vendor_buffer[vendor_size] = '\0';
+            vendor_str = device_vendor_buffer.data();
+        }
     }
     
     // Get compute units
@@ -215,9 +239,9 @@ GpuDeviceInfo query_device_info(int device_id) {
     info.device_id = device_id;
     
     // Create a more descriptive name that includes vendor and device type
-    std::string name_str = device_name;
-    if (device_vendor[0] != '\0') {
-        name_str = std::string(device_vendor) + " " + name_str;
+    std::string name_str = device_name_buffer.data();
+    if (!vendor_str.empty()) {
+        name_str = vendor_str + " " + name_str;
     }
     
     // Add device type suffix if it's not a GPU

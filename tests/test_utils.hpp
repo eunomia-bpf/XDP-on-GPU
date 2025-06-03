@@ -3,14 +3,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <vector>
 
 // Put NetworkEvent in the ebpf_gpu namespace to match the expected kernel signature
 namespace ebpf_gpu {
 
 // NetworkEvent definition for testing purposes
 struct NetworkEvent {
-    uint8_t* data = nullptr;
-    uint32_t length = 0;
     uint64_t timestamp = 0;
     uint32_t src_ip = 0;
     uint32_t dst_ip = 0;

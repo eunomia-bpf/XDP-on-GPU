@@ -53,12 +53,21 @@ if(USE_OPENCL_BACKEND)
     file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/cl)
 endif()
 
-# Add test executable
+# Main test executable - excludes performance tests
 add_executable(ebpf_gpu_tests
     test_main.cpp
-    test_gpu_backend.cpp
     test_event_processor.cpp
+    test_gpu_backend.cpp
+    test_device_manager.cpp
     test_kernel_loader.cpp
+    test_integration.cpp
+)
+
+# Benchmark test executable - separate for performance tests
+add_executable(ebpf_gpu_benchmarks
+    test_main.cpp
+    test_performance.cpp
+    test_performance_cpu.cpp
 )
 
 # Set test dependencies
@@ -68,9 +77,15 @@ target_link_libraries(ebpf_gpu_tests
     ebpf_gpu_processor
 )
 
+target_link_libraries(ebpf_gpu_benchmarks PRIVATE
+    Catch2::Catch2WithMain
+    ebpf_gpu_processor
+)
+
 # Add PTX generation dependency if CUDA is enabled
 if(USE_CUDA_BACKEND)
     add_dependencies(ebpf_gpu_tests generate_ptx)
+    add_dependencies(ebpf_gpu_benchmarks generate_ptx)
 endif()
 
 # Set test working directory to find kernel files

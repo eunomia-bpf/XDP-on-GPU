@@ -2,8 +2,10 @@
 
 #include "../include/ebpf_gpu_processor.hpp"
 #include "../include/gpu_backend.hpp"
+#ifdef USE_CUDA_BACKEND
 #include <cuda.h>
 #include <cuda_runtime.h>
+#endif
 #include <memory>
 #include <vector>
 #include "../include/gpu_device_manager.hpp"

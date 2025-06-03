@@ -11,7 +11,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Compiler flags
-set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -Wall -Wextra")
+set(CMAKE_CXX_FLAGS_DEBUG "-g -O0  -Wall -Wextra")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 
 # Backend options
@@ -154,6 +154,12 @@ add_subdirectory(src)
 option(BUILD_EXAMPLES "Build example applications" ON)
 if(BUILD_EXAMPLES)
     add_subdirectory(example)
+endif()
+
+# Build the POC (Proof of Concept) examples
+option(BUILD_POC "Build POC examples" ON)
+if(BUILD_POC)
+    add_subdirectory(poc)
 endif()
 
 # Test framework

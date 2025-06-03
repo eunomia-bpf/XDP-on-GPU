@@ -5,8 +5,6 @@ namespace ebpf_gpu {
 
 // Network event structure for GPU processing
 struct NetworkEvent {
-    uint8_t* data;
-    uint32_t length;
     uint64_t timestamp;
     uint32_t src_ip;
     uint32_t dst_ip;
@@ -105,11 +103,6 @@ __global__ void complex_filter(NetworkEvent* events, size_t num_events) {
         if (event->dst_port < 1024 && event->dst_port != 80 && event->dst_port != 443) {
             should_drop = true;
         }
-    }
-    
-    // Check packet size
-    if (event->length > 1500 || event->length < 64) {
-        should_drop = true;
     }
     
     // Protocol-specific rules

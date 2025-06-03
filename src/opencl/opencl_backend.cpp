@@ -7,6 +7,7 @@
 #include <memory>
 #include <map>
 #include <algorithm>
+#include <iostream>
 
 namespace ebpf_gpu {
 
@@ -203,30 +204,74 @@ void OpenCLBackend::initialize_device(int device_id) {
         context_ = nullptr;
     }
     
-    // Get all available devices
-    auto devices = get_available_devices();
-    if (devices.empty()) {
-        throw std::runtime_error("No OpenCL devices available");
+    try {
+        // Get all available devices
+        auto devices = get_available_devices();
+        if (devices.empty()) {
+            std::cerr << "OpenCL: No OpenCL devices available" << std::endl;
+            throw std::runtime_error("No OpenCL devices available");
+        }
+        
+        // Use the specified device or the first one
+        if (device_id >= 0 && static_cast<size_t>(device_id) < devices.size()) {
+            device_ = devices[device_id];
+        } else {
+            std::cerr << "OpenCL: Invalid device ID " << device_id 
+                    << ", defaulting to device 0" << std::endl;
+            device_ = devices[0];
+            device_id = 0;
+        }
+        
+        current_device_id_ = device_id;
+        
+        // Create OpenCL context
+        cl_int error;
+        cl_context_properties properties[] = {
+            CL_CONTEXT_PLATFORM, (cl_context_properties)platform_,
+            0
+        };
+        
+        // Try creating context with properties first
+        context_ = clCreateContext(properties, 1, &device_, nullptr, nullptr, &error);
+        if (error != CL_SUCCESS) {
+            std::cerr << "OpenCL: Failed to create context with properties, trying without properties" << std::endl;
+            // Try creating context without properties
+            context_ = clCreateContext(nullptr, 1, &device_, nullptr, nullptr, &error);
+            if (error != CL_SUCCESS) {
+                std::cerr << "OpenCL: Failed to create context without properties: " << error << std::endl;
+                throw std::runtime_error("Failed to create OpenCL context");
+            }
+        }
+        
+        // Create command queue
+        #ifdef CL_VERSION_2_0
+        // For OpenCL 2.0+, try to use the newer API
+        cl_queue_properties queue_props[] = {0};
+        command_queue_ = clCreateCommandQueueWithProperties(context_, device_, queue_props, &error);
+        #else
+        // Fall back to deprecated API for older OpenCL versions
+        command_queue_ = clCreateCommandQueue(context_, device_, 0, &error);
+        #endif
+        
+        if (error != CL_SUCCESS) {
+            std::cerr << "OpenCL: Failed to create command queue: " << error << std::endl;
+            clReleaseContext(context_);
+            context_ = nullptr;
+            throw std::runtime_error("Failed to create OpenCL command queue");
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "OpenCL: Error during device initialization: " << e.what() << std::endl;
+        // Make sure we clean up any partially initialized resources
+        if (command_queue_) {
+            clReleaseCommandQueue(command_queue_);
+            command_queue_ = nullptr;
+        }
+        if (context_) {
+            clReleaseContext(context_);
+            context_ = nullptr;
+        }
+        throw; // Re-throw the exception
     }
-    
-    // Use the specified device or the first one
-    if (device_id >= 0 && static_cast<size_t>(device_id) < devices.size()) {
-        device_ = devices[device_id];
-    } else {
-        device_ = devices[0];
-        device_id = 0;
-    }
-    
-    current_device_id_ = device_id;
-    
-    // Create OpenCL context
-    cl_int error;
-    context_ = clCreateContext(nullptr, 1, &device_, nullptr, nullptr, &error);
-    check_cl_error(error, "clCreateContext");
-    
-    // Create command queue
-    command_queue_ = clCreateCommandQueue(context_, device_, 0, &error);
-    check_cl_error(error, "clCreateCommandQueue");
 }
 
 void OpenCLBackend::set_device(int device_id) {
@@ -453,12 +498,24 @@ bool OpenCLBackend::launch_kernel(void* data, size_t event_count,
 
 void* OpenCLBackend::create_stream() {
     if (!context_ || !device_) {
+        std::cerr << "OpenCL: Cannot create stream - context or device not initialized" << std::endl;
         return nullptr;
     }
     
+    // Try to create a command queue
     cl_int error;
+    
+    #ifdef CL_VERSION_2_0
+    // For OpenCL 2.0+, try to use the newer API
+    cl_queue_properties props[] = {0};
+    cl_command_queue queue = clCreateCommandQueueWithProperties(context_, device_, props, &error);
+    #else
+    // Fall back to deprecated API for older OpenCL versions
     cl_command_queue queue = clCreateCommandQueue(context_, device_, 0, &error);
+    #endif
+    
     if (error != CL_SUCCESS) {
+        std::cerr << "OpenCL: Failed to create command queue: " << error << std::endl;
         return nullptr;
     }
     
@@ -628,38 +685,63 @@ GpuDeviceInfo OpenCLBackend::get_device_info(int device_id) const {
     info.device_id = device_id;
     info.backend_type = BackendType::OpenCL;
 
+    // Get available devices
+    auto devices = get_available_devices();
+    if (devices.empty() || static_cast<size_t>(device_id) >= devices.size()) {
+        info.name = "No OpenCL device available";
+        return info;
+    }
+    
+    cl_device_id device = devices[device_id];
     cl_int err;
     
-    // Get device name
-    char device_name[256];
-    err = clGetDeviceInfo(device_, CL_DEVICE_NAME, sizeof(device_name), device_name, nullptr);
+    // Get device name using a safer approach
+    std::vector<char> device_name_buffer;
+    size_t name_size = 0;
+    
+    // First get the required size
+    err = clGetDeviceInfo(device, CL_DEVICE_NAME, 0, nullptr, &name_size);
     if (err != CL_SUCCESS) {
-        throw std::runtime_error("Failed to get OpenCL device name");
+        info.name = "Unknown OpenCL device";
+        return info;
     }
-    info.name = device_name;
+    
+    // Allocate buffer with space for null terminator
+    device_name_buffer.resize(name_size + 1, 0);
+    
+    // Now get the actual name
+    err = clGetDeviceInfo(device, CL_DEVICE_NAME, name_size, device_name_buffer.data(), nullptr);
+    if (err != CL_SUCCESS) {
+        info.name = "Unknown OpenCL device";
+        return info;
+    }
+    
+    // Ensure null termination
+    device_name_buffer[name_size] = '\0';
+    info.name = device_name_buffer.data();
     
     // Get memory information
-    cl_ulong global_mem_size;
-    err = clGetDeviceInfo(device_, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(global_mem_size), &global_mem_size, nullptr);
+    cl_ulong global_mem_size = 0;
+    err = clGetDeviceInfo(device, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(global_mem_size), &global_mem_size, nullptr);
     if (err != CL_SUCCESS) {
-        throw std::runtime_error("Failed to get OpenCL device memory");
+        global_mem_size = 0;
     }
     info.total_memory = global_mem_size;
     info.available_memory = global_mem_size / 2; // Conservative estimate since OpenCL doesn't provide this directly
     
     // Get compute units
-    cl_uint compute_units;
-    err = clGetDeviceInfo(device_, CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(compute_units), &compute_units, nullptr);
+    cl_uint compute_units = 0;
+    err = clGetDeviceInfo(device, CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(compute_units), &compute_units, nullptr);
     if (err != CL_SUCCESS) {
-        throw std::runtime_error("Failed to get OpenCL compute units");
+        compute_units = 0;
     }
     info.num_cores = compute_units;
     
     // Get clock frequency
-    cl_uint clock_freq;
-    err = clGetDeviceInfo(device_, CL_DEVICE_MAX_CLOCK_FREQUENCY, sizeof(clock_freq), &clock_freq, nullptr);
+    cl_uint clock_freq = 0;
+    err = clGetDeviceInfo(device, CL_DEVICE_MAX_CLOCK_FREQUENCY, sizeof(clock_freq), &clock_freq, nullptr);
     if (err != CL_SUCCESS) {
-        throw std::runtime_error("Failed to get OpenCL clock frequency");
+        clock_freq = 0;
     }
     info.clock_rate = clock_freq * 1000; // Convert MHz to kHz for consistency with CUDA
     
