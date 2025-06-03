@@ -77,6 +77,16 @@ std::string format_size(size_t size) {
     return std::to_string(size);
 }
 
+// Get the kernel function name based on the backend
+std::string get_test_kernel_name() {
+    TestBackend backend = detect_test_backend();
+    if (backend == TestBackend::OpenCL) {
+        return "simple_kernel"; // OpenCL function name
+    } else {
+        return kernel_names::DEFAULT_TEST_KERNEL; // CUDA/PTX function name
+    }
+}
+
 // Helper function to check environment and setup processor
 bool setup_test_environment(EventProcessor& processor) {
     auto devices = get_available_devices();
@@ -84,12 +94,13 @@ bool setup_test_environment(EventProcessor& processor) {
         return false;
     }
     
-    const char* ptx_code = get_test_ptx();
-    if (!ptx_code) {
+    const char* test_code = get_test_ptx();
+    if (!test_code) {
         return false;
     }
     
-    ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    std::string kernel_name = get_test_kernel_name();
+    ProcessingResult load_result = processor.load_kernel_from_ir(test_code, kernel_name);
     return load_result == ProcessingResult::Success;
 }
 
@@ -118,12 +129,12 @@ void run_benchmark(const std::string& name, EventProcessor& processor,
 TEST_CASE("Performance - Basic Operations", "[performance][benchmark]") {
     auto devices = get_available_devices();
     if (devices.empty()) {
-        SKIP("No CUDA devices available for performance testing");
+        SKIP("No GPU devices available for performance testing");
     }
     
-    const char* ptx_code = get_test_ptx();
-    if (!ptx_code) {
-        SKIP("PTX file not found for performance testing");
+    const char* test_code = get_test_ptx();
+    if (!test_code) {
+        SKIP("Test IR code not found for performance testing");
     }
     
     // Pre-create and setup test data
@@ -132,7 +143,8 @@ TEST_CASE("Performance - Basic Operations", "[performance][benchmark]") {
     
     // Setup processor once outside benchmark
     EventProcessor processor;
-    ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    std::string kernel_name = get_test_kernel_name();
+    ProcessingResult load_result = processor.load_kernel_from_ir(test_code, kernel_name);
     REQUIRE(load_result == ProcessingResult::Success);
 
     // Warm up GPU (first run is often slower)
@@ -163,9 +175,9 @@ TEST_CASE("Performance - Zero-Copy vs Normal Copy", "[performance][benchmark]") 
         SKIP("No CUDA devices available for performance testing");
     }
     
-    const char* ptx_code = get_test_ptx();
-    if (!ptx_code) {
-        SKIP("PTX file not found for performance testing");
+    const char* test_code = get_test_ptx();
+    if (!test_code) {
+        SKIP("Test IR code not found for performance testing");
     }
     
     // Test different event counts
@@ -179,7 +191,8 @@ TEST_CASE("Performance - Zero-Copy vs Normal Copy", "[performance][benchmark]") 
             // Test with normal copy (default config)
             {
                 EventProcessor processor;
-                ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+                std::string kernel_name = get_test_kernel_name();
+                ProcessingResult load_result = processor.load_kernel_from_ir(test_code, kernel_name);
                 REQUIRE(load_result == ProcessingResult::Success);
                 
                 std::string bench_name = "Normal copy - " + format_size(event_count) + " events";
@@ -194,7 +207,8 @@ TEST_CASE("Performance - Zero-Copy vs Normal Copy", "[performance][benchmark]") 
                 config.use_zero_copy = true;
                 
                 EventProcessor processor(config);
-                ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+                std::string kernel_name = get_test_kernel_name();
+                ProcessingResult load_result = processor.load_kernel_from_ir(test_code, kernel_name);
                 REQUIRE(load_result == ProcessingResult::Success);
                 
                 // Register the buffer for zero-copy
@@ -220,9 +234,9 @@ TEST_CASE("Performance - Unified Memory vs Normal Copy", "[performance][benchmar
         SKIP("No CUDA devices available for performance testing");
     }
     
-    const char* ptx_code = get_test_ptx();
-    if (!ptx_code) {
-        SKIP("PTX file not found for performance testing");
+    const char* test_code = get_test_ptx();
+    if (!test_code) {
+        SKIP("Test IR code not found for performance testing");
     }
     
     // Check if any device supports unified memory
@@ -249,7 +263,8 @@ TEST_CASE("Performance - Unified Memory vs Normal Copy", "[performance][benchmar
             // Test with normal copy (default config)
             {
                 EventProcessor processor;
-                ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+                std::string kernel_name = get_test_kernel_name();
+                ProcessingResult load_result = processor.load_kernel_from_ir(test_code, kernel_name);
                 REQUIRE(load_result == ProcessingResult::Success);
                 
                 std::string bench_name = "Normal copy - " + format_size(event_count) + " events";
@@ -264,7 +279,8 @@ TEST_CASE("Performance - Unified Memory vs Normal Copy", "[performance][benchmar
                 config.use_unified_memory = true;
                 
                 EventProcessor processor(config);
-                ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+                std::string kernel_name = get_test_kernel_name();
+                ProcessingResult load_result = processor.load_kernel_from_ir(test_code, kernel_name);
                 REQUIRE(load_result == ProcessingResult::Success);
                 
                 std::string bench_name = "Unified memory - " + format_size(event_count) + " events";
@@ -282,14 +298,15 @@ TEST_CASE("Performance - Scaling Test", "[performance][benchmark]") {
         SKIP("No CUDA devices available for performance testing");
     }
     
-    const char* ptx_code = get_test_ptx();
-    if (!ptx_code) {
-        SKIP("PTX file not found for performance testing");
+    const char* test_code = get_test_ptx();
+    if (!test_code) {
+        SKIP("Test IR code not found for performance testing");
     }
     
     // Setup processor once
     EventProcessor processor;
-    ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    std::string kernel_name = get_test_kernel_name();
+    ProcessingResult load_result = processor.load_kernel_from_ir(test_code, kernel_name);
     REQUIRE(load_result == ProcessingResult::Success);
     
     // Test different event counts
@@ -334,14 +351,15 @@ TEST_CASE("Performance - Single vs Multiple Events", "[performance][benchmark]")
         SKIP("No CUDA devices available for performance testing");
     }
     
-    const char* ptx_code = get_test_ptx();
-    if (!ptx_code) {
-        SKIP("PTX file not found for performance testing");
+    const char* test_code = get_test_ptx();
+    if (!test_code) {
+        SKIP("Test IR code not found for performance testing");
     }
     
     // Setup processor once
     EventProcessor processor;
-    ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    std::string kernel_name = get_test_kernel_name();
+    ProcessingResult load_result = processor.load_kernel_from_ir(test_code, kernel_name);
     REQUIRE(load_result == ProcessingResult::Success);
     
     // Pre-create test data
@@ -386,13 +404,14 @@ TEST_CASE("Performance - Memory Transfer vs Compute", "[performance][benchmark]"
         SKIP("No CUDA devices available for performance testing");
     }
     
-    const char* ptx_code = get_test_ptx();
-    if (!ptx_code) {
-        SKIP("PTX file not found for performance testing");
+    const char* test_code = get_test_ptx();
+    if (!test_code) {
+        SKIP("Test IR code not found for performance testing");
     }
     
     EventProcessor processor;
-    ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    std::string kernel_name = get_test_kernel_name();
+    ProcessingResult load_result = processor.load_kernel_from_ir(test_code, kernel_name);
     REQUIRE(load_result == ProcessingResult::Success);
     
     auto run_memory_transfer_test = [&](const std::string& test_name, size_t event_size_multiplier) {
@@ -450,13 +469,14 @@ TEST_CASE("Performance - Pinned vs Pageable Memory", "[performance][benchmark]")
         SKIP("No CUDA devices available for performance testing");
     }
     
-    const char* ptx_code = get_test_ptx();
-    if (!ptx_code) {
-        SKIP("PTX file not found for performance testing");
+    const char* test_code = get_test_ptx();
+    if (!test_code) {
+        SKIP("Test IR code not found for performance testing");
     }
     
     EventProcessor processor;
-    ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    std::string kernel_name = get_test_kernel_name();
+    ProcessingResult load_result = processor.load_kernel_from_ir(test_code, kernel_name);
     REQUIRE(load_result == ProcessingResult::Success);
     
     for (size_t event_count : test_config::scaling_sizes) {
@@ -502,9 +522,9 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
         SKIP("No CUDA devices available for performance testing");
     }
     
-    const char* ptx_code = get_test_ptx();
-    if (!ptx_code) {
-        SKIP("PTX file not found for performance testing");
+    const char* test_code = get_test_ptx();
+    if (!test_code) {
+        SKIP("Test IR code not found for performance testing");
     }
     
     // Setup processor with default config first
@@ -513,7 +533,8 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
     config.max_stream_count = 4; // Use 4 CUDA streams
     
     EventProcessor processor(config);
-    ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    std::string kernel_name = get_test_kernel_name();
+    ProcessingResult load_result = processor.load_kernel_from_ir(test_code, kernel_name);
     REQUIRE(load_result == ProcessingResult::Success);
     
     // Use a smaller event count for tests to prevent timeouts
@@ -577,7 +598,7 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
             
             // Update processor with new config
             processor = EventProcessor(config);
-            ProcessingResult batch_load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+            ProcessingResult batch_load_result = processor.load_kernel_from_ir(test_code, kernel_name);
             REQUIRE(batch_load_result == ProcessingResult::Success);
             
             // Reset event states for this test
@@ -601,7 +622,7 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
         
         // Restore original config
         processor = EventProcessor(original_config);
-        ProcessingResult restore_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+        ProcessingResult restore_result = processor.load_kernel_from_ir(test_code, kernel_name);
         REQUIRE(restore_result == ProcessingResult::Success);
     }
     
@@ -620,7 +641,7 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
             
             // Recreate processor with new config
             processor = EventProcessor(config);
-            ProcessingResult stream_load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+            ProcessingResult stream_load_result = processor.load_kernel_from_ir(test_code, kernel_name);
             REQUIRE(stream_load_result == ProcessingResult::Success);
             
             // Reset event states for this test
@@ -640,7 +661,7 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
         
         // Restore original config
         processor = EventProcessor(original_config);
-        ProcessingResult restore_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+        ProcessingResult restore_result = processor.load_kernel_from_ir(test_code, kernel_name);
         REQUIRE(restore_result == ProcessingResult::Success);
     }
 }

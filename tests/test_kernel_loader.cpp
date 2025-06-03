@@ -9,16 +9,16 @@
 using namespace ebpf_gpu;
 
 TEST_CASE("KernelLoader - Basic Functionality", "[kernel_loader]") {
-    SECTION("PTX validation") {
-        // Get the test PTX
-        const char* valid_ptx = get_test_ptx();
-        REQUIRE(valid_ptx != nullptr);
+    SECTION("IR validation") {
+        // Get the test IR code
+        const char* valid_code = get_test_ptx();
+        REQUIRE(valid_code != nullptr);
         
-        const char* invalid_ptx = "This is not valid PTX code";
+        const char* invalid_code = "This is not valid IR code";
         
         // Test validation
-        REQUIRE(KernelLoader::validate_ir(valid_ptx));
-        REQUIRE_FALSE(KernelLoader::validate_ir(invalid_ptx));
+        REQUIRE(KernelLoader::validate_ir(valid_code));
+        REQUIRE_FALSE(KernelLoader::validate_ir(invalid_code));
         REQUIRE_FALSE(KernelLoader::validate_ir(""));
     }
     
@@ -39,7 +39,7 @@ TEST_CASE("KernelLoader - Basic Functionality", "[kernel_loader]") {
     
     SECTION("File reading") {
         // Create a temporary test file
-        std::string test_file = "/tmp/test_ptx.txt";
+        std::string test_file = "/tmp/test_ir.txt";
         std::string test_content = "test content for file reading";
         
         std::ofstream file(test_file);
@@ -70,13 +70,14 @@ TEST_CASE("KernelLoader - Error Handling", "[kernel_loader]") {
             return;
         }
         
-        // Empty input should fail gracefully
-        try {
+        // Empty input handling depends on backend
+        if (backend == BackendType::CUDA) {
+            // For CUDA, empty IR should throw
             REQUIRE_THROWS_AS(loader.load_from_ir(""), std::runtime_error);
-        } catch (...) {
-            // If test fails, we're possibly catching the exception thrown by the load_from_ir method
-            // instead of catching a test failure
-            FAIL("load_from_ir with empty string should throw std::runtime_error");
+        } else if (backend == BackendType::OpenCL) {
+            // For OpenCL, check that load_from_ir("") returns nullptr without throwing
+            auto module = loader.load_from_ir("");
+            REQUIRE(module == nullptr);
         }
     }
     

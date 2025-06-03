@@ -23,23 +23,72 @@ struct NetworkEvent {
     uint8_t action = 0;  // 0=drop, 1=pass, 2=redirect
 };
 
+// Backend detection
+enum class TestBackend {
+    CUDA,
+    OpenCL,
+    Unknown
+};
+
+inline TestBackend detect_test_backend() {
+#ifdef USE_CUDA_BACKEND
+    return TestBackend::CUDA;
+#elif defined(USE_OPENCL_BACKEND)
+    return TestBackend::OpenCL;
+#else
+    return TestBackend::Unknown;
+#endif
+}
+
 } // namespace ebpf_gpu
 
-// Helper function to get PTX code - shared across all test files
+// Helper function to get PTX/OpenCL code - shared across all test files
 inline const char* get_test_ptx() {
-    static char* ptx_code = nullptr;
-    if (ptx_code) return ptx_code;
+    static char* code = nullptr;
+    if (code) return code;
     
+    // Detect backend
+    ebpf_gpu::TestBackend backend = ebpf_gpu::detect_test_backend();
+    
+    // Try to load appropriate test code file
+    const char* file_path = nullptr;
+    
+    if (backend == ebpf_gpu::TestBackend::CUDA) {
 #ifdef PTX_FILE_PATH
-    const char* ptx_path = PTX_FILE_PATH;
+        file_path = PTX_FILE_PATH;
 #else
-    const char* ptx_path = "test_ptx.ptx";
+        file_path = "test_ptx.ptx";
 #endif
+    } else if (backend == ebpf_gpu::TestBackend::OpenCL) {
+        // Try to find OpenCL test kernel
+        const char* opencl_paths[] = {
+            "test_opencl.cl",
+            "tests/test_opencl.cl",
+            "../tests/test_opencl.cl",
+            "./tests/test_opencl.cl",
+            "./build/tests/test_opencl.cl",
+            "../build/tests/test_opencl.cl",
+            "./build/test_opencl.cl"
+        };
+        
+        for (const char* path : opencl_paths) {
+            if (std::ifstream(path).good()) {
+                file_path = path;
+                break;
+            }
+        }
+        
+        // If no OpenCL file found, we'll use embedded fallback
+    }
     
-    // Read the test PTX file
-    FILE* file = std::fopen(ptx_path, "r");
-    if (!file) {
-        // Try alternative paths
+    // Try to read the file if found
+    FILE* file = nullptr;
+    if (file_path) {
+        file = std::fopen(file_path, "r");
+    }
+    
+    if (!file && backend == ebpf_gpu::TestBackend::CUDA) {
+        // Try alternative PTX paths for CUDA
         const char* ptx_paths[] = {
             "test_ptx.ptx",
             "tests/test_ptx.ptx",
@@ -53,13 +102,59 @@ inline const char* get_test_ptx() {
         for (const char* path : ptx_paths) {
             file = std::fopen(path, "r");
             if (file) {
-                ptx_path = path;
+                file_path = path;
                 break;
             }
         }
+    }
+    
+    if (file) {
+        // Read from file
+        std::fseek(file, 0, SEEK_END);
+        long size = std::ftell(file);
+        std::fseek(file, 0, SEEK_SET);
         
-        if (!file) {
-            // Embedded fallback test PTX if file not found
+        code = (char*)std::malloc(size + 1);
+        if (size > 0) {
+            size_t read = std::fread(code, 1, size, file);
+            if (read < (size_t)size) {
+                // Handle read error
+                code[read] = '\0';
+            } else {
+                code[size] = '\0';
+            }
+        } else {
+            code[0] = '\0';
+        }
+        
+        std::fclose(file);
+    } else {
+        // Use embedded fallback based on backend
+        const char* embedded_code;
+        size_t code_size;
+        
+        if (backend == ebpf_gpu::TestBackend::OpenCL) {
+            // Embedded OpenCL kernel
+            static const char embedded_opencl[] = 
+                "__kernel void simple_kernel(\n"
+                "    __global const unsigned char* input_ptr,\n"
+                "    __global unsigned int* output_ptr,\n"
+                "    const unsigned int length\n"
+                ")\n"
+                "{\n"
+                "    // Get thread ID\n"
+                "    int id = get_global_id(0);\n"
+                "    \n"
+                "    // Set output to 1 (simple test pass condition)\n"
+                "    if (id == 0) {\n"
+                "        output_ptr[0] = 1;\n"
+                "    }\n"
+                "}\n";
+            
+            embedded_code = embedded_opencl;
+            code_size = sizeof(embedded_opencl);
+        } else {
+            // Embedded PTX (for CUDA)
             static const char embedded_ptx[] = 
                 ".version 6.0\n"
                 ".target sm_30\n"
@@ -83,32 +178,14 @@ inline const char* get_test_ptx() {
                 "    \n"
                 "    ret;\n"
                 "}\n";
-                
-            size_t size = sizeof(embedded_ptx);
-            ptx_code = (char*)std::malloc(size);
-            std::memcpy(ptx_code, embedded_ptx, size);
-            return ptx_code;
+            
+            embedded_code = embedded_ptx;
+            code_size = sizeof(embedded_ptx);
         }
+        
+        code = (char*)std::malloc(code_size);
+        std::memcpy(code, embedded_code, code_size);
     }
     
-    std::fseek(file, 0, SEEK_END);
-    long size = std::ftell(file);
-    std::fseek(file, 0, SEEK_SET);
-    
-    ptx_code = (char*)std::malloc(size + 1);
-    if (size > 0) {
-        size_t read = std::fread(ptx_code, 1, size, file);
-        if (read < (size_t)size) {
-            // Handle read error
-            ptx_code[read] = '\0';
-        } else {
-            ptx_code[size] = '\0';
-        }
-    } else {
-        ptx_code[0] = '\0';
-    }
-    
-    std::fclose(file);
-    
-    return ptx_code;
+    return code;
 } 

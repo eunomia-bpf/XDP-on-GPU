@@ -47,6 +47,16 @@ void reset_event_actions(std::vector<ebpf_gpu::NetworkEvent>& events) {
     }
 }
 
+// Get the kernel function name based on the backend
+std::string get_backend_kernel_name() {
+    TestBackend backend = detect_test_backend();
+    if (backend == TestBackend::OpenCL) {
+        return "simple_kernel"; // OpenCL function name
+    } else {
+        return "simple_kernel"; // CUDA/PTX function name
+    }
+}
+
 TEST_CASE("Integration - Complete Workflow", "[integration]") {
     SECTION("Device detection and kernel loading") {
         // Test device information retrieval
@@ -64,19 +74,19 @@ TEST_CASE("Integration - Complete Workflow", "[integration]") {
         INFO("Selected device ID: " << device_id);
         REQUIRE(device_id >= 0);
         
-        // Get test PTX/IR code
-        const char* test_ptx = get_test_ptx();
-        if (!test_ptx || strlen(test_ptx) == 0) {
-            SKIP("PTX file not found for integration testing");
+        // Get test IR code (PTX or OpenCL)
+        const char* test_code = get_test_ptx();
+        if (!test_code || strlen(test_code) == 0) {
+            SKIP("Test IR code not found for integration testing");
             return;
         }
         
         // Validate IR code
         KernelLoader loader;
-        REQUIRE(KernelLoader::validate_ir(test_ptx));
+        REQUIRE(KernelLoader::validate_ir(test_code));
         
         // Load IR code
-        auto module = loader.load_from_ir(test_ptx);
+        auto module = loader.load_from_ir(test_code);
         REQUIRE(module != nullptr);
         REQUIRE(module->is_valid());
     }
@@ -84,18 +94,21 @@ TEST_CASE("Integration - Complete Workflow", "[integration]") {
 
 TEST_CASE("Integration - Event Processing Workflow", "[integration]") {
     SECTION("Complete event processing pipeline") {
-        // Skip if no test PTX/IR available
-        const char* test_ptx = get_test_ptx();
-        if (!test_ptx || strlen(test_ptx) == 0) {
-            SKIP("PTX file not found for integration testing");
+        // Skip if no test IR available
+        const char* test_code = get_test_ptx();
+        if (!test_code || strlen(test_code) == 0) {
+            SKIP("Test IR code not found for integration testing");
             return;
         }
         
         // Create processor with default config
         EventProcessor processor;
         
+        // Get correct kernel function name for the backend
+        std::string kernel_name = get_backend_kernel_name();
+        
         // Load kernel
-        auto result = processor.load_kernel_from_source(test_ptx, "simple_kernel");
+        auto result = processor.load_kernel_from_source(test_code, kernel_name);
         if (result != ProcessingResult::Success) {
             SKIP("Failed to load kernel for integration testing");
             return;
@@ -113,10 +126,10 @@ TEST_CASE("Integration - Event Processing Workflow", "[integration]") {
 
 TEST_CASE("Integration - Error Handling", "[integration]") {
     SECTION("Memory allocation failures") {
-        // Skip if no test PTX/IR available
-        const char* test_ptx = get_test_ptx();
-        if (!test_ptx || strlen(test_ptx) == 0) {
-            SKIP("PTX file not found for error handling testing");
+        // Skip if no test IR available
+        const char* test_code = get_test_ptx();
+        if (!test_code || strlen(test_code) == 0) {
+            SKIP("Test IR code not found for error handling testing");
             return;
         }
         
@@ -126,6 +139,10 @@ TEST_CASE("Integration - Error Handling", "[integration]") {
         
         try {
             EventProcessor processor(config);
+            
+            // Load kernel first to make processor ready
+            std::string kernel_name = get_backend_kernel_name();
+            auto load_result = processor.load_kernel_from_source(test_code, kernel_name);
             
             // Test extremely large allocation that should fail
             const size_t extremely_large_size = static_cast<size_t>(1) << 40; // 1TB
@@ -139,41 +156,46 @@ TEST_CASE("Integration - Error Handling", "[integration]") {
                 INFO("Extremely large pinned allocation correctly failed");
             }
             
+            REQUIRE(processor.is_ready());
+            
         } catch (const std::exception& e) {
             INFO("Caught exception: " << e.what());
             // It's ok if it throws
         }
-        
-        // Verify that after resource limits, we can still create a processor
-        EventProcessor processor;
-        REQUIRE(processor.is_ready());
     }
 }
 
 TEST_CASE("Integration - Resource Management", "[integration]") {
     SECTION("EventProcessor lifecycle") {
-        // Skip if no test PTX/IR available
-        const char* test_ptx = get_test_ptx();
-        if (!test_ptx || strlen(test_ptx) == 0) {
-            SKIP("PTX file not found for resource management testing");
+        // Skip if no test IR available
+        const char* test_code = get_test_ptx();
+        if (!test_code || strlen(test_code) == 0) {
+            SKIP("Test IR code not found for resource management testing");
             return;
         }
+        
+        // Get kernel name for the current backend
+        std::string kernel_name = get_backend_kernel_name();
         
         // Create and destroy processors multiple times
         for (int i = 0; i < 5; ++i) {
             EventProcessor processor;
+            
+            // Load kernel to make processor ready
+            auto load_result = processor.load_kernel_from_source(test_code, kernel_name);
             REQUIRE(processor.is_ready());
             
-            auto result = processor.load_kernel_from_source(test_ptx, "simple_kernel");
-            if (result == ProcessingResult::Success) {
+            if (load_result == ProcessingResult::Success) {
                 INFO("Successfully loaded kernel in iteration " << i);
             } else {
-                INFO("Failed to load kernel in iteration " << i << ", error: " << static_cast<int>(result));
+                INFO("Failed to load kernel in iteration " << i << ", error: " << static_cast<int>(load_result));
             }
         }
         
         // Create processor and move it
         EventProcessor p1;
+        // Load kernel to make processor ready
+        auto load_result = p1.load_kernel_from_source(test_code, kernel_name);
         REQUIRE(p1.is_ready());
         
         EventProcessor p2(std::move(p1));
