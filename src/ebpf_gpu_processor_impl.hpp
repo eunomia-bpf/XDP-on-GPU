@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../include/ebpf_gpu_processor.hpp"
+#include "../include/gpu_backend.hpp"
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <memory>
@@ -38,20 +39,17 @@ public:
     GpuDeviceInfo get_device_info() const;
     size_t get_available_memory() const;
     bool is_ready() const;
+    BackendType get_backend_type() const;
 
 private:
     Config config_;
-    CUcontext context_;
+    std::unique_ptr<GpuBackend> backend_;
     void* device_buffer_;
     size_t buffer_size_;
-    std::unique_ptr<CudaModule> module_;
-    CUfunction kernel_function_;
-    GpuDeviceManager device_manager_;
     int device_id_;
     
     // Async processing support with multiple device buffers for better overlap
-    std::vector<cudaStream_t> cuda_streams_;
-    std::vector<cudaEvent_t> cuda_events_;  // Events for pipeline synchronization
+    std::vector<void*> streams_;
     std::vector<void*> device_buffers_;     // Multiple device buffers, one per stream
     std::vector<size_t> buffer_sizes_;      // Size of each device buffer
     size_t current_stream_idx_;  // Instance variable for round-robin stream selection
@@ -63,13 +61,10 @@ private:
     // Async processing methods
     void initialize_streams();
     void cleanup_streams();
-    cudaStream_t get_available_stream();
+    void* get_available_stream();
     
     // Device buffer management
     ProcessingResult ensure_stream_buffers(size_t required_buffer_size);
-    
-    // Context management
-    ProcessingResult ensure_context_current();
     
     // Fast path processing for single batch optimization
     ProcessingResult process_events_single_batch(void* events_buffer, size_t buffer_size, 

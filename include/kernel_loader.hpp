@@ -1,68 +1,69 @@
 #pragma once
 
 #include <string>
-#include <memory>
 #include <vector>
-#include <cuda.h>
+#include <memory>
 
 namespace ebpf_gpu {
 
-class CudaModule {
-public:
-    explicit CudaModule(const std::string& ptx_code);
-    explicit CudaModule(const std::vector<char>& ptx_data);
-    ~CudaModule();
-    
-    // Non-copyable, movable
-    CudaModule(const CudaModule&) = delete;
-    CudaModule& operator=(const CudaModule&) = delete;
-    CudaModule(CudaModule&& other) noexcept;
-    CudaModule& operator=(CudaModule&& other) noexcept;
-    
-    CUmodule get() const noexcept { return module_; }
-    CUfunction get_function(const std::string& function_name) const;
-    
-    bool is_valid() const noexcept { return module_ != nullptr; }
+// Forward declaration
+class CudaModule;
 
-private:
-    CUmodule module_;
-};
-
+/**
+ * Utility class for loading and managing GPU kernels
+ */
 class KernelLoader {
 public:
-    KernelLoader() = default;
-    ~KernelLoader() = default;
+    KernelLoader();
+    ~KernelLoader();
     
-    // Non-copyable, movable
+    // Non-copyable
     KernelLoader(const KernelLoader&) = delete;
     KernelLoader& operator=(const KernelLoader&) = delete;
+    
+    // Movable
     KernelLoader(KernelLoader&&) = default;
     KernelLoader& operator=(KernelLoader&&) = default;
     
-    // Load from PTX string
-    std::unique_ptr<CudaModule> load_from_ptx(const std::string& ptx_code) const;
+    /**
+     * Load kernel from PTX code string
+     * @param ptx PTX code string
+     * @throws std::runtime_error if loading fails
+     */
+    void load_from_ptx(const std::string& ptx);
     
-    // Load from PTX file
-    std::unique_ptr<CudaModule> load_from_file(const std::string& file_path) const;
+    /**
+     * Load kernel from file (.ptx, .cl, etc.)
+     * @param path File path
+     * @throws std::runtime_error if loading fails
+     */
+    void load_from_file(const std::string& path);
     
-    // Load from CUDA source (compile to PTX first)
-    std::unique_ptr<CudaModule> load_from_cuda_source(
-        const std::string& cuda_source,
-        const std::vector<std::string>& include_paths = {},
-        const std::vector<std::string>& compile_options = {}) const;
+    /**
+     * Get a kernel function by name
+     * @param name Kernel function name
+     * @return Pointer to kernel function (must be cast to appropriate type)
+     * @throws std::runtime_error if kernel not found
+     */
+    void* get_kernel(const std::string& name) const;
     
-    // Utility functions
-    static std::vector<char> read_file(const std::string& file_path);
-    static std::string compile_cuda_to_ptx(
-        const std::string& cuda_source,
-        const std::vector<std::string>& include_paths = {},
-        const std::vector<std::string>& compile_options = {});
+    /**
+     * Static helper to validate PTX code
+     * @param ptx PTX code string
+     * @return true if valid, false otherwise
+     */
+    static bool validate_ptx(const std::string& ptx);
     
-    // Validate PTX code
-    static bool validate_ptx(const std::string& ptx_code);
+    /**
+     * Static helper to read a file into a vector of chars
+     * @param path File path
+     * @return Vector containing file contents
+     * @throws std::runtime_error if file cannot be read
+     */
+    static std::vector<char> read_file(const std::string& path);
     
 private:
-    std::vector<char> read_ptx_file(const std::string& file_path) const;
+    std::unique_ptr<CudaModule> module_;
 };
 
 } // namespace ebpf_gpu 

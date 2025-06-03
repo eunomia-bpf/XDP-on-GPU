@@ -1,134 +1,111 @@
 # Test framework for eBPF GPU Processor
 
-# Find or download a simple test framework (using a header-only approach)
+cmake_minimum_required(VERSION 3.18)
+project(ebpf_gpu_tests LANGUAGES CXX)
+
+# Find Catch2
 include(FetchContent)
-
-# Use Catch2 for testing (header-only version)
 FetchContent_Declare(
-    Catch2
-    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-    GIT_TAG v3.4.0
+  Catch2
+  GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+  GIT_TAG v3.5.2
 )
-
 FetchContent_MakeAvailable(Catch2)
 
-# Generate PTX from CUDA kernels at compile time
-set(PTX_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/ptx")
-file(MAKE_DIRECTORY ${PTX_OUTPUT_DIR})
+# Set C++ standard
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Generate PTX from cuda_kernels.cu
-set(CUDA_KERNEL_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cuda_kernels.cu")
-set(PTX_OUTPUT_FILE "${PTX_OUTPUT_DIR}/cuda_kernels.ptx")
+# Include directories
+include_directories(${CMAKE_SOURCE_DIR}/include)
 
-# Get the first detected CUDA architecture for PTX generation
-list(GET CMAKE_CUDA_ARCHITECTURES 0 PTX_ARCH)
-
-# Custom command to generate PTX
-add_custom_command(
-    OUTPUT ${PTX_OUTPUT_FILE}
-    COMMAND ${CMAKE_CUDA_COMPILER} -ptx -arch=sm_${PTX_ARCH}
-            ${CUDA_KERNEL_FILE} -o ${PTX_OUTPUT_FILE}
-            -I${CMAKE_SOURCE_DIR}/include
-    DEPENDS ${CUDA_KERNEL_FILE}
-    COMMENT "Generating PTX from CUDA kernels for architecture sm_${PTX_ARCH}"
+# Add test kernels
+add_library(test_kernels INTERFACE)
+target_sources(test_kernels INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/kernels/cuda_kernels.cu
+    ${CMAKE_CURRENT_SOURCE_DIR}/kernels/opencl_kernels.cl
 )
 
-# Create a target for PTX generation
-add_custom_target(generate_ptx DEPENDS ${PTX_OUTPUT_FILE})
+# Set up CUDA PTX generation
+if(USE_CUDA_BACKEND)
+    # Generate PTX from CUDA kernel
+    add_custom_target(generate_ptx
+        COMMAND ${CMAKE_CUDA_COMPILER} -ptx
+                -o ${CMAKE_CURRENT_BINARY_DIR}/ptx/cuda_kernels.ptx
+                ${CMAKE_CURRENT_SOURCE_DIR}/kernels/cuda_kernels.cu
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/kernels/cuda_kernels.cu
+        COMMENT "Generating PTX from CUDA kernels for architecture sm_${CMAKE_CUDA_ARCHITECTURES}"
+    )
+    
+    # Create directory for PTX files
+    file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/ptx)
+endif()
 
-# Test kernels
-add_library(test_kernels OBJECT
-    cuda_kernels.cu
+# Copy OpenCL kernels to build directory
+if(USE_OPENCL_BACKEND)
+    configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernels/opencl_kernels.cl
+        ${CMAKE_CURRENT_BINARY_DIR}/cl/opencl_kernels.cl
+        COPYONLY
+    )
+    
+    # Create directory for CL files
+    file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/cl)
+endif()
+
+# Add test executable
+add_executable(ebpf_gpu_tests
+    test_main.cpp
+    test_gpu_backend.cpp
+    test_event_processor.cpp
+    test_kernel_loader.cpp
 )
 
-set_target_properties(test_kernels PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-    POSITION_INDEPENDENT_CODE ON
-)
-
-# Performance tests (GPU only)
-add_executable(test_performance
-    test_performance.cpp
-    $<TARGET_OBJECTS:test_kernels>
-)
-
-
-# Add dependency on PTX generation and pass PTX path and architecture as compile definitions
-add_dependencies(test_performance generate_ptx)
-
-
-target_link_libraries(test_performance 
-    ebpf_gpu_processor
+# Set test dependencies
+target_link_libraries(ebpf_gpu_tests
+    PRIVATE
     Catch2::Catch2WithMain
-)
-
-add_dependencies(test_performance generate_ptx)
-target_compile_definitions(test_performance PRIVATE 
-    PTX_FILE_PATH="${PTX_OUTPUT_FILE}"
-    CUDA_ARCH_SM=${PTX_ARCH}
-)
-
-# CPU Performance tests (benchmarks)
-add_executable(test_performance_cpu
-    test_performance_cpu.cpp
-    $<TARGET_OBJECTS:test_kernels>
-)
-
-target_link_libraries(test_performance_cpu 
     ebpf_gpu_processor
-    Catch2::Catch2WithMain
 )
 
-add_dependencies(test_performance_cpu generate_ptx)
-target_compile_definitions(test_performance_cpu PRIVATE 
-    PTX_FILE_PATH="${PTX_OUTPUT_FILE}"
-    CUDA_ARCH_SM=${PTX_ARCH}
+# Add PTX generation dependency if CUDA is enabled
+if(USE_CUDA_BACKEND)
+    add_dependencies(ebpf_gpu_tests generate_ptx)
+endif()
+
+# Set test working directory to find kernel files
+set_target_properties(ebpf_gpu_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
 
-# Integration tests
-add_executable(test_integration
-    test_integration.cpp
-    $<TARGET_OBJECTS:test_kernels>
-)
-
-target_link_libraries(test_integration 
-    ebpf_gpu_processor
-    Catch2::Catch2WithMain
-)
-
-add_dependencies(test_integration generate_ptx)
-target_compile_definitions(test_integration PRIVATE 
-    PTX_FILE_PATH="${PTX_OUTPUT_FILE}"
-    CUDA_ARCH_SM=${PTX_ARCH}
-)
-
-# Legacy C API tests removed - using modern C++ API only
+# Performance test (optional)
+option(BUILD_PERFORMANCE_TESTS "Build performance tests" OFF)
+if(BUILD_PERFORMANCE_TESTS AND USE_CUDA_BACKEND)
+    add_executable(test_performance
+        performance_test.cpp
+    )
+    
+    target_link_libraries(test_performance 
+        PRIVATE
+        Catch2::Catch2WithMain
+        ebpf_gpu_processor
+    )
+    
+    add_dependencies(test_performance generate_ptx)
+    
+    target_compile_definitions(test_performance PRIVATE 
+        PTX_FILE_PATH="${CMAKE_CURRENT_BINARY_DIR}/ptx/cuda_kernels.ptx"
+        CUDA_ARCH="${CMAKE_CUDA_ARCHITECTURES}"
+    )
+    
+    include(CTest)
+    include(Catch)
+    catch_discover_tests(test_performance
+        TEST_SPEC "[benchmark]"
+    )
+endif()
 
 # Register tests with CTest
 include(CTest)
-
-# Only include Catch if it's available
-if(TARGET Catch2::Catch2)
-    list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
-    include(Catch)
-    
-    # Regular tests (exclude benchmark tests)
-    catch_discover_tests(test_integration)
-    
-    # Performance tests without benchmarks (exclude [benchmark] tag)
-    catch_discover_tests(test_performance 
-        TEST_SPEC "~[benchmark]"
-    )
-    
-    # Benchmark tests (separate target, not included in regular test runs)
-    catch_discover_tests(test_performance_cpu 
-        TEST_PREFIX "bench_"
-        TEST_SPEC "[benchmark]"
-    )
-    
-    # Also add GPU benchmarks
-    catch_discover_tests(test_performance 
-        TEST_PREFIX "bench_"
-        TEST_SPEC "[benchmark]"
-    )
-endif() 
+include(Catch)
+catch_discover_tests(ebpf_gpu_tests) 

@@ -1,172 +1,188 @@
-#include "kernel_loader.hpp"
-#include <cuda.h>
+#include "../include/kernel_loader.hpp"
 #include <fstream>
-#include <sstream>
-#include <cstdlib>
+#include <vector>
+#include <regex>
+#include <string>
 #include <stdexcept>
+
+#ifdef USE_CUDA_BACKEND
+#include <cuda.h>
+#endif
 
 namespace ebpf_gpu {
 
-// CudaModule implementation
-CudaModule::CudaModule(const std::string& ptx_code) : module_(nullptr) {
-    CUresult result = cuModuleLoadData(&module_, ptx_code.c_str());
-    if (result != CUDA_SUCCESS) {
-        throw std::runtime_error("Failed to load PTX module");
+// Helper function to check if string ends with a suffix
+bool ends_with(const std::string& str, const std::string& suffix) {
+    if (str.length() < suffix.length()) {
+        return false;
     }
+    return str.compare(str.length() - suffix.length(), suffix.length(), suffix) == 0;
 }
 
-CudaModule::CudaModule(const std::vector<char>& ptx_data) : module_(nullptr) {
-    CUresult result = cuModuleLoadData(&module_, ptx_data.data());
-    if (result != CUDA_SUCCESS) {
-        throw std::runtime_error("Failed to load PTX module from data");
+// Helper class for CUDA module management
+// Only defined if CUDA backend is enabled
+#ifdef USE_CUDA_BACKEND
+class CudaModule {
+public:
+    CudaModule(const std::string& ptx) {
+        // Load PTX code into CUDA module
+        CUresult result = cuModuleLoadData(&module_, ptx.c_str());
+        if (result != CUDA_SUCCESS) {
+            throw std::runtime_error("Failed to load PTX code into CUDA module");
+        }
     }
-}
-
-CudaModule::~CudaModule() {
-    if (module_) {
-        cuModuleUnload(module_);
+    
+    CudaModule(const std::vector<char>& ptx) {
+        // Load PTX code into CUDA module
+        CUresult result = cuModuleLoadData(&module_, ptx.data());
+        if (result != CUDA_SUCCESS) {
+            throw std::runtime_error("Failed to load PTX code into CUDA module");
+        }
     }
-}
-
-CudaModule::CudaModule(CudaModule&& other) noexcept : module_(other.module_) {
-    other.module_ = nullptr;
-}
-
-CudaModule& CudaModule::operator=(CudaModule&& other) noexcept {
-    if (this != &other) {
+    
+    ~CudaModule() {
         if (module_) {
             cuModuleUnload(module_);
         }
-        module_ = other.module_;
+    }
+    
+    // Non-copyable
+    CudaModule(const CudaModule&) = delete;
+    CudaModule& operator=(const CudaModule&) = delete;
+    
+    // Movable
+    CudaModule(CudaModule&& other) noexcept : module_(other.module_) {
         other.module_ = nullptr;
     }
-    return *this;
-}
-
-CUfunction CudaModule::get_function(const std::string& function_name) const {
-    if (!module_) {
-        throw std::runtime_error("Module is not loaded");
+    
+    CudaModule& operator=(CudaModule&& other) noexcept {
+        if (this != &other) {
+            if (module_) {
+                cuModuleUnload(module_);
+            }
+            module_ = other.module_;
+            other.module_ = nullptr;
+        }
+        return *this;
     }
     
-    CUfunction function;
-    CUresult result = cuModuleGetFunction(&function, module_, function_name.c_str());
-    if (result != CUDA_SUCCESS) {
-        throw std::runtime_error("Failed to get function: " + function_name);
+    CUfunction get_function(const std::string& name) const {
+        CUfunction function;
+        CUresult result = cuModuleGetFunction(&function, module_, name.c_str());
+        if (result != CUDA_SUCCESS) {
+            throw std::runtime_error("Failed to get function from CUDA module: " + name);
+        }
+        return function;
     }
-    return function;
-}
+    
+    operator bool() const {
+        return module_ != nullptr;
+    }
+    
+private:
+    CUmodule module_ = nullptr;
+};
+#else
+// Stub CudaModule for when CUDA is not available
+class CudaModule {
+public:
+    CudaModule(const std::string&) {
+        throw std::runtime_error("CUDA backend not available");
+    }
+    
+    CudaModule(const std::vector<char>&) {
+        throw std::runtime_error("CUDA backend not available");
+    }
+    
+    void* get_function(const std::string&) const {
+        throw std::runtime_error("CUDA backend not available");
+        return nullptr;
+    }
+    
+    operator bool() const {
+        return false;
+    }
+};
+#endif
 
 // KernelLoader implementation
-std::unique_ptr<CudaModule> KernelLoader::load_from_ptx(const std::string& ptx_code) const {
-    if (ptx_code.empty()) {
-        throw std::invalid_argument("PTX code cannot be empty");
+
+KernelLoader::KernelLoader() = default;
+KernelLoader::~KernelLoader() = default;
+
+bool KernelLoader::validate_ptx(const std::string& ptx) {
+    // Basic validation: Check for .version, .target, and .entry in the PTX code
+    if (ptx.empty()) {
+        return false;
     }
     
-    return std::make_unique<CudaModule>(ptx_code);
-}
-
-std::unique_ptr<CudaModule> KernelLoader::load_from_file(const std::string& file_path) const {
-    auto ptx_data = read_ptx_file(file_path);
-    return std::make_unique<CudaModule>(ptx_data);
-}
-
-std::unique_ptr<CudaModule> KernelLoader::load_from_cuda_source(
-    const std::string& cuda_source,
-    const std::vector<std::string>& include_paths,
-    const std::vector<std::string>& compile_options) const {
+    std::regex version_pattern(R"(\.version\s+\d+\.\d+)");
+    std::regex target_pattern(R"(\.target\s+\w+)");
+    std::regex entry_pattern(R"(\.entry\s+\w+)");
     
-    std::string ptx_code = compile_cuda_to_ptx(cuda_source, include_paths, compile_options);
-    return load_from_ptx(ptx_code);
+    return std::regex_search(ptx, version_pattern) &&
+           std::regex_search(ptx, target_pattern) &&
+           std::regex_search(ptx, entry_pattern);
 }
 
-std::vector<char> KernelLoader::read_file(const std::string& file_path) {
-    std::ifstream file(file_path, std::ios::binary | std::ios::ate);
-    if (!file.is_open()) {
-        throw std::runtime_error("Cannot open file: " + file_path);
+std::vector<char> KernelLoader::read_file(const std::string& path) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file) {
+        throw std::runtime_error("Failed to open file: " + path);
     }
     
     std::streamsize size = file.tellg();
     file.seekg(0, std::ios::beg);
     
-    std::vector<char> buffer(size + 1);  // +1 for null terminator
+    std::vector<char> buffer(size);
     if (!file.read(buffer.data(), size)) {
-        throw std::runtime_error("Failed to read file: " + file_path);
+        throw std::runtime_error("Failed to read file: " + path);
     }
     
-    buffer[size] = '\0';  // Null terminate for PTX
     return buffer;
 }
 
-std::string KernelLoader::compile_cuda_to_ptx(
-    const std::string& cuda_source,
-    const std::vector<std::string>& include_paths,
-    const std::vector<std::string>& compile_options) {
+void KernelLoader::load_from_ptx(const std::string& ptx) {
+    if (!validate_ptx(ptx)) {
+        throw std::invalid_argument("Invalid PTX code");
+    }
     
-    // Create temporary files
-    std::string temp_cu_file = "/tmp/temp_kernel_" + std::to_string(std::rand()) + ".cu";
-    std::string temp_ptx_file = "/tmp/temp_kernel_" + std::to_string(std::rand()) + ".ptx";
-    
+    // Only try to create a CUDA module if CUDA backend is enabled
+#ifdef USE_CUDA_BACKEND
     try {
-        // Write CUDA source to temporary file
-        std::ofstream cu_file(temp_cu_file);
-        if (!cu_file.is_open()) {
-            throw std::runtime_error("Cannot create temporary CUDA file");
-        }
-        cu_file << cuda_source;
-        cu_file.close();
-        
-        // Build nvcc command
-        std::ostringstream cmd;
-        cmd << "nvcc -ptx";
-        
-        // Add include paths
-        for (const auto& include_path : include_paths) {
-            cmd << " -I" << include_path;
-        }
-        
-        // Add compile options
-        for (const auto& option : compile_options) {
-            cmd << " " << option;
-        }
-        
-        cmd << " " << temp_cu_file << " -o " << temp_ptx_file;
-        
-        // Execute compilation
-        int result = std::system(cmd.str().c_str());
-        if (result != 0) {
-            throw std::runtime_error("CUDA compilation failed");
-        }
-        
-        // Read PTX result
-        auto ptx_data = read_file(temp_ptx_file);
-        std::string ptx_code(ptx_data.begin(), ptx_data.end());
-        
-        // Cleanup temporary files
-        std::remove(temp_cu_file.c_str());
-        std::remove(temp_ptx_file.c_str());
-        
-        return ptx_code;
-        
-    } catch (...) {
-        // Cleanup on error
-        std::remove(temp_cu_file.c_str());
-        std::remove(temp_ptx_file.c_str());
-        throw;
+        module_ = std::make_unique<CudaModule>(ptx);
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to load PTX: " + std::string(e.what()));
     }
+#else
+    throw std::runtime_error("CUDA backend not available");
+#endif
 }
 
-bool KernelLoader::validate_ptx(const std::string& ptx_code) {
-    if (ptx_code.empty()) {
-        return false;
-    }
+void KernelLoader::load_from_file(const std::string& path) {
+    auto content = read_file(path);
     
-    // Basic PTX validation - check for PTX header
-    return ptx_code.find(".version") != std::string::npos &&
-           ptx_code.find(".target") != std::string::npos;
+    // Check file extension to determine type
+    if (ends_with(path, ".ptx")) {
+        std::string ptx_code(content.begin(), content.end());
+        load_from_ptx(ptx_code);
+    } else {
+        throw std::runtime_error("Unsupported file format: " + path);
+    }
 }
 
-std::vector<char> KernelLoader::read_ptx_file(const std::string& file_path) const {
-    return read_file(file_path);
+void* KernelLoader::get_kernel(const std::string& name) const {
+#ifdef USE_CUDA_BACKEND
+    if (module_) {
+        try {
+            return (void*)module_->get_function(name);
+        } catch (const std::exception& e) {
+            throw std::runtime_error("Failed to get kernel function: " + std::string(e.what()));
+        }
+    }
+#endif
+
+    throw std::runtime_error("No kernel module loaded or CUDA backend not available");
 }
 
 } // namespace ebpf_gpu 

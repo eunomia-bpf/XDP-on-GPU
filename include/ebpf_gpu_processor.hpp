@@ -2,6 +2,7 @@
 
 #include "gpu_device_manager.hpp"
 #include "kernel_loader.hpp"
+#include "gpu_backend.hpp"
 #include <memory>
 #include <vector>
 #include <functional>
@@ -29,6 +30,9 @@ public:
         bool use_unified_memory;
         bool use_zero_copy;  // Enable zero-copy for registered host buffers
         
+        // Backend selection
+        BackendType backend_type;
+        
         // Kernel launch configuration
         int block_size;  // CUDA block size (threads per block)
         size_t shared_memory_size;  // Shared memory per block in bytes
@@ -45,6 +49,7 @@ public:
                   enable_profiling(false), 
                   use_unified_memory(false),
                   use_zero_copy(false),  // Disable zero-copy by default
+                  backend_type(BackendType::CUDA),  // Default to CUDA backend
                   block_size(256),  // Good default for most GPUs
                   shared_memory_size(0),  // No shared memory by default
                   max_grid_size(65535),  // CUDA maximum grid dimension
@@ -115,6 +120,9 @@ public:
     GpuDeviceInfo get_device_info() const;
     size_t get_available_memory() const;
     bool is_ready() const;
+    
+    // Backend information
+    BackendType get_backend_type() const;
 
 private:
     class Impl;

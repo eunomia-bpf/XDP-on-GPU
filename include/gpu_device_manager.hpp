@@ -1,58 +1,56 @@
 #pragma once
 
-#include <vector>
+#include "gpu_backend.hpp"
 #include <string>
-#include <memory>
+#include <vector>
 
 namespace ebpf_gpu {
 
-struct GpuDeviceInfo {
-    int device_id;
-    std::string name;
-    size_t total_memory;
-    size_t free_memory;
-    int compute_capability_major;
-    int compute_capability_minor;
-    int multiprocessor_count;
-    int max_threads_per_block;
-    int max_threads_per_multiprocessor;
-    bool unified_addressing;
-};
-
+/**
+ * @brief Manager for GPU devices
+ * Handles device discovery, selection, and information retrieval
+ */
 class GpuDeviceManager {
 public:
     GpuDeviceManager();
-    ~GpuDeviceManager() = default;
-
-    // Non-copyable, movable
-    GpuDeviceManager(const GpuDeviceManager&) = delete;
-    GpuDeviceManager& operator=(const GpuDeviceManager&) = delete;
-    GpuDeviceManager(GpuDeviceManager&&) = default;
-    GpuDeviceManager& operator=(GpuDeviceManager&&) = default;
-
-    // Device discovery and information
-    int get_device_count() const;
-    std::vector<GpuDeviceInfo> get_all_devices() const;
-    GpuDeviceInfo get_device_info(int device_id) const;
+    ~GpuDeviceManager();
     
-    // Device selection
-    int select_best_device() const;
-    bool is_device_suitable(int device_id, size_t min_memory = 0) const;
+    /**
+     * @brief Get the number of available devices for a specific backend
+     * @param type Backend type (CUDA or OpenCL)
+     * @return Number of devices
+     */
+    int get_device_count(BackendType type) const;
     
-    // Device capabilities
-    bool supports_unified_memory(int device_id) const;
-    bool supports_compute_capability(int device_id, int major, int minor) const;
+    /**
+     * @brief Get the best device for a specific backend
+     * @param type Backend type (CUDA or OpenCL)
+     * @return Device ID, or -1 if no devices are available
+     */
+    int get_best_device(BackendType type) const;
     
-    // Memory information
+    /**
+     * @brief Get available memory on a device
+     * @param device_id Device ID
+     * @return Available memory in bytes
+     */
     size_t get_available_memory(int device_id) const;
-    size_t get_total_memory(int device_id) const;
+    
+    /**
+     * @brief Query information about a device
+     * @param device_id Device ID
+     * @return Device information
+     */
+    GpuDeviceInfo query_device_info(int device_id) const;
 
 private:
+    /**
+     * @brief Initialize and discover GPU devices
+     */
     void initialize_devices();
-    GpuDeviceInfo query_device_info(int device_id) const;
     
-    std::vector<GpuDeviceInfo> devices_;
-    bool initialized_;
+    int cuda_device_count_ = 0;
+    int opencl_device_count_ = 0;
 };
 
 } // namespace ebpf_gpu 

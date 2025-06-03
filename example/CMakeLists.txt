@@ -1,148 +1,39 @@
 cmake_minimum_required(VERSION 3.18)
-project(dpdk_example LANGUAGES CXX C)
+project(ebpf_gpu_examples LANGUAGES CXX)
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_C_STANDARD 99)
-set(CMAKE_C_STANDARD_REQUIRED ON)
-
-# Build configuration
-option(ENABLE_DEBUG "Enable debug build" OFF)
-
-# Set build type
-if(ENABLE_DEBUG)
-    set(CMAKE_BUILD_TYPE Debug)
-    add_definitions(-DDEBUG)
-else()
-    set(CMAKE_BUILD_TYPE Release)
-endif()
-
-# Find DPDK
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(DPDK REQUIRED libdpdk)
-
-# Find CUDA
-find_package(CUDAToolkit REQUIRED)
-
-# Additional required libraries
-find_library(PTHREAD_LIB pthread REQUIRED)
-find_library(DL_LIB dl REQUIRED)
-find_library(NUMA_LIB numa)
-find_library(RT_LIB rt REQUIRED)
 
 # Include directories
-include_directories(${DPDK_INCLUDE_DIRS})
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
-# Add necessary definitions
-add_definitions(-D_GNU_SOURCE)
-add_definitions(-include rte_config.h)
+# Get backend configuration from parent project
+if(USE_CUDA_BACKEND OR USE_OPENCL_BACKEND)
+    # Add the multi-backend example
+    add_executable(multi_backend_example multi_backend_example.cpp)
+    target_link_libraries(multi_backend_example ebpf_gpu_processor)
 
-# Compiler flags
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -O3")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -O3")
-if(ENABLE_DEBUG)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -O0")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -O0")
+    # Copy kernel files to build directory
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/opencl_kernel.cl")
+        configure_file(${CMAKE_CURRENT_SOURCE_DIR}/opencl_kernel.cl
+                      ${CMAKE_CURRENT_BINARY_DIR}/opencl_kernel.cl COPYONLY)
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cuda_kernel.cu")
+        configure_file(${CMAKE_CURRENT_SOURCE_DIR}/cuda_kernel.cu
+                      ${CMAKE_CURRENT_BINARY_DIR}/cuda_kernel.cu COPYONLY)
+    endif()
+
+    # Installation
+    install(TARGETS multi_backend_example
+        RUNTIME DESTINATION bin
+    )
+else()
+    message(STATUS "No GPU backends available. Examples will not be built.")
 endif()
-
-# Add DPDK compile flags
-add_compile_options(${DPDK_CFLAGS})
-
-# Source files for C library
-set(C_SOURCES
-    dpdk_driver.c
-)
-
-# Create C library for DPDK driver
-add_library(dpdk_driver STATIC ${C_SOURCES})
-
-# Main application source
-set(SOURCES
-    dpdk_example.cpp
-)
-
-# Main application executable
-add_executable(dpdk_example ${SOURCES})
-
-# Link libraries
-target_link_libraries(dpdk_example
-    dpdk_driver
-    ebpf_gpu_processor
-    ${DPDK_LIBRARIES}
-    ${PTHREAD_LIB}
-    ${DL_LIB}
-    ${RT_LIB}
-    CUDA::cudart
-    CUDA::cuda_driver
-)
-
-# Link numa if available
-if(NUMA_LIB)
-    target_link_libraries(dpdk_example ${NUMA_LIB})
-endif()
-
-# Make sure ebpf_gpu_processor is built first
-add_dependencies(dpdk_example ebpf_gpu_processor)
-
-# Installation
-install(TARGETS dpdk_example dpdk_driver
-    RUNTIME DESTINATION bin
-    ARCHIVE DESTINATION lib
-    LIBRARY DESTINATION lib
-)
-
-# Custom targets for testing
-add_custom_target(test-null
-    COMMAND sudo $<TARGET_FILE:dpdk_example> --vdev=net_null0 -l 0
-    DEPENDS dpdk_example
-    COMMENT "Test with null PMD"
-)
-
-add_custom_target(test-gpu-null
-    COMMAND sudo $<TARGET_FILE:dpdk_example> --vdev=net_null0 -l 0 -- --kernel=${CMAKE_SOURCE_DIR}/examples/simple_packet_filter.cu --function=packet_filter
-    DEPENDS dpdk_example
-    COMMENT "Test with null PMD and GPU processing"
-)
-
-add_custom_target(test-tap
-    COMMAND sudo $<TARGET_FILE:dpdk_example> --vdev=net_tap0,iface=test0 -l 0
-    DEPENDS dpdk_example
-    COMMENT "Test with TAP interface"
-)
-
-add_custom_target(test-ring
-    COMMAND sudo $<TARGET_FILE:dpdk_example> --vdev=net_ring0 -l 0
-    DEPENDS dpdk_example
-    COMMENT "Test with ring PMD"
-)
-
-add_custom_target(test-multi
-    COMMAND sudo $<TARGET_FILE:dpdk_example> --vdev=net_null0 --vdev=net_null1 -l 0
-    DEPENDS dpdk_example
-    COMMENT "Test with multiple devices"
-)
-
-# Make sure examples directory exists
-add_custom_command(
-    TARGET dpdk_example POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_SOURCE_DIR}/examples
-    COMMENT "Ensuring examples directory exists"
-)
-
-# Copy CUDA example to examples directory if not already there
-add_custom_command(
-    TARGET dpdk_example POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_SOURCE_DIR}/example/simple_packet_filter.cu
-        ${CMAKE_SOURCE_DIR}/examples/simple_packet_filter.cu
-    COMMENT "Copying CUDA example to examples directory"
-)
 
 # Configuration summary
-message(STATUS "Build configuration:")
-message(STATUS "  CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}")
-message(STATUS "  ENABLE_DEBUG: ${ENABLE_DEBUG}")
-message(STATUS "  DPDK_LIBRARIES: ${DPDK_LIBRARIES}")
-message(STATUS "  DPDK_CFLAGS: ${DPDK_CFLAGS}") 
+message(STATUS "eBPF GPU Examples configuration:")
+message(STATUS "  CUDA Backend: ${USE_CUDA_BACKEND}")
+message(STATUS "  OpenCL Backend: ${USE_OPENCL_BACKEND}") 
