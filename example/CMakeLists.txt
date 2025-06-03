@@ -172,6 +172,15 @@ if(WITH_DPDK)
             ${CMAKE_SOURCE_DIR}/examples/simple_packet_filter.cu
         COMMENT "Copying CUDA example to examples directory"
     )
+    
+    # Copy OpenCL example to examples directory if not already there
+    add_custom_command(
+        TARGET dpdk_example POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/example/simple_packet_filter_cl.cl
+            ${CMAKE_SOURCE_DIR}/examples/simple_packet_filter_cl.cl
+        COMMENT "Copying OpenCL example to examples directory"
+    )
 else()
     # Build a simple example without DPDK
     message(STATUS "Building basic examples without DPDK")
@@ -221,6 +230,15 @@ else()
             ${CMAKE_SOURCE_DIR}/example/simple_packet_filter.cu
             ${CMAKE_SOURCE_DIR}/examples/simple_packet_filter.cu
         COMMENT "Copying CUDA example to examples directory"
+    )
+    
+    # Copy OpenCL example to examples directory if not already there
+    add_custom_command(
+        TARGET simple_example POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/example/simple_packet_filter_cl.cl
+            ${CMAKE_SOURCE_DIR}/examples/simple_packet_filter_cl.cl
+        COMMENT "Copying OpenCL example to examples directory"
     )
 endif()
 

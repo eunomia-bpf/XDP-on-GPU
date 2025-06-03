@@ -8,8 +8,9 @@
 #include <iomanip>
 #include <random>
 
-// Include the eBPF GPU processor header - we need the full namespace
+// Include the eBPF GPU processor header
 #include "ebpf_gpu_processor.hpp"
+#include "kernel_loader.hpp"
 
 // Structure representing a simple packet
 struct SimplePacket {
@@ -75,9 +76,34 @@ void print_packet(const SimplePacket& packet, int max_bytes = 64) {
     std::cout << std::dec; // Reset to decimal
 }
 
+// Helper to determine backend type as string
+std::string backend_type_to_string(ebpf_gpu::BackendType type) {
+    switch (type) {
+        case ebpf_gpu::BackendType::CUDA: return "CUDA";
+        case ebpf_gpu::BackendType::OpenCL: return "OpenCL";
+        default: return "Unknown";
+    }
+}
+
+// Helper to get default kernel file based on backend
+std::string get_default_kernel_file(ebpf_gpu::BackendType type) {
+    switch (type) {
+        case ebpf_gpu::BackendType::CUDA:
+            return "examples/simple_packet_filter.cu";
+        case ebpf_gpu::BackendType::OpenCL:
+            return "examples/simple_packet_filter_cl.cl";
+        default:
+            // Default to CUDA
+            return "examples/simple_packet_filter.cu";
+    }
+}
+
 int main(int argc, char* argv[]) {
+    // Get the current backend type
+    ebpf_gpu::BackendType backend = ebpf_gpu::get_backend_type();
+    
     // Parse command line arguments
-    std::string kernel_file = "examples/simple_packet_filter.cu";
+    std::string kernel_file = get_default_kernel_file(backend);
     std::string kernel_function = "packet_filter";
     int num_packets = 1000;
     
@@ -101,6 +127,7 @@ int main(int argc, char* argv[]) {
     
     std::cout << "Simple eBPF GPU Processor Example\n";
     std::cout << "--------------------------------\n";
+    std::cout << "Backend: " << backend_type_to_string(backend) << "\n";
     std::cout << "Kernel file: " << kernel_file << "\n";
     std::cout << "Kernel function: " << kernel_function << "\n";
     std::cout << "Number of packets: " << num_packets << "\n\n";
@@ -115,7 +142,7 @@ int main(int argc, char* argv[]) {
         print_packet(packets[0]);
         std::cout << "\n";
         
-        // Initialize the eBPF GPU processor with explicit namespace
+        // Initialize the eBPF GPU processor
         ebpf_gpu::EventProcessor processor;
         
         // Load the eBPF program

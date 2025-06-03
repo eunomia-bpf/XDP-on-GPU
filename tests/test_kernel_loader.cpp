@@ -2,35 +2,45 @@
 #include "kernel_loader.hpp"
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
+#include <string>
 
 using namespace ebpf_gpu;
 
 TEST_CASE("KernelLoader - Basic Functionality", "[kernel_loader]") {
-    KernelLoader loader;
-    
     SECTION("PTX validation") {
-        // Valid PTX code
-        std::string valid_ptx = R"(
-.version 7.0
-.target sm_75
-.address_size 64
-
-.visible .entry test_kernel(
-    .param .u64 test_kernel_param_0
-)
-{
-    ret;
-}
-)";
+        const char* valid_ptx = R"(
+            .version 6.0
+            .target sm_30
+            .address_size 64
+            
+            .visible .entry kernel_function()
+            {
+                ret;
+            }
+        )";
         
-        REQUIRE(KernelLoader::validate_ptx(valid_ptx));
+        const char* invalid_ptx = "This is not valid PTX code";
         
-        // Invalid PTX code
-        std::string invalid_ptx = "not ptx code";
-        REQUIRE_FALSE(KernelLoader::validate_ptx(invalid_ptx));
+        // Test validation
+        REQUIRE(KernelLoader::validate_ir(valid_ptx));
+        REQUIRE_FALSE(KernelLoader::validate_ir(invalid_ptx));
+        REQUIRE_FALSE(KernelLoader::validate_ir(""));
+    }
+    
+    SECTION("Backend detection") {
+        KernelLoader loader;
+        BackendType backend = loader.get_backend();
         
-        // Empty PTX code
-        REQUIRE_FALSE(KernelLoader::validate_ptx(""));
+        // Just verify that the backend is one of the known types
+        REQUIRE((backend == BackendType::CUDA || 
+                 backend == BackendType::OpenCL || 
+                 backend == BackendType::Unknown));
+        
+        // Output the backend type for informational purposes
+        INFO("Detected backend: " << 
+            (backend == BackendType::CUDA ? "CUDA" : 
+             backend == BackendType::OpenCL ? "OpenCL" : "Unknown"));
     }
     
     SECTION("File reading") {
@@ -58,11 +68,14 @@ TEST_CASE("KernelLoader - Basic Functionality", "[kernel_loader]") {
 TEST_CASE("KernelLoader - Error Handling", "[kernel_loader]") {
     KernelLoader loader;
     
-    SECTION("Empty PTX code") {
-        REQUIRE_THROWS_AS(loader.load_from_ptx(""), std::invalid_argument);
+    SECTION("Invalid input") {
+        // Empty input should fail gracefully
+        REQUIRE_THROWS_AS(loader.load_from_ir(""), std::runtime_error);
     }
     
-    SECTION("Non-existent file") {
-        REQUIRE_THROWS_AS(loader.load_from_file("/non/existent/file.ptx"), std::runtime_error);
+    SECTION("Invalid file paths") {
+        // Non-existent file should fail gracefully
+        auto module = loader.load_from_file("/path/to/nonexistent/file.ptx");
+        REQUIRE(module == nullptr);
     }
 } 

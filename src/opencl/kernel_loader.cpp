@@ -1,208 +1,275 @@
+#ifdef USE_OPENCL_BACKEND
+
 #include "../../include/kernel_loader.hpp"
 #include <CL/cl.h>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <cstdlib>
 #include <stdexcept>
 #include <vector>
+#include <cstring>
 
 namespace ebpf_gpu {
 
-// CudaModule implementation for OpenCL
-CudaModule::CudaModule(const std::string& ptx_code) : module_(nullptr) {
-    // In OpenCL, we'll use the ptx_code parameter as OpenCL C source code
+// Helper function to get OpenCL device and context
+static bool get_opencl_device_and_context(cl_device_id& device, cl_context& context) {
     cl_int err;
-    cl_platform_id platform;
     
-    // Get OpenCL platform
-    err = clGetPlatformIDs(1, &platform, nullptr);
-    if (err != CL_SUCCESS) {
-        throw std::runtime_error("Failed to get OpenCL platform");
+    // Get the platforms
+    cl_uint num_platforms;
+    err = clGetPlatformIDs(0, nullptr, &num_platforms);
+    if (err != CL_SUCCESS || num_platforms == 0) {
+        std::cerr << "OpenCL: No platforms found" << std::endl;
+        return false;
     }
     
-    // Get device
-    cl_device_id device;
-    err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, nullptr);
+    std::vector<cl_platform_id> platforms(num_platforms);
+    err = clGetPlatformIDs(num_platforms, platforms.data(), nullptr);
     if (err != CL_SUCCESS) {
-        throw std::runtime_error("Failed to get OpenCL GPU device");
+        std::cerr << "OpenCL: Failed to get platform IDs: " << err << std::endl;
+        return false;
     }
     
-    // Create context
-    cl_context context = clCreateContext(nullptr, 1, &device, nullptr, nullptr, &err);
+    // Use the first platform and get GPU devices
+    cl_platform_id platform = platforms[0];
+    cl_uint num_devices;
+    
+    // Try to get GPU devices first
+    err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 0, nullptr, &num_devices);
+    if (err != CL_SUCCESS || num_devices == 0) {
+        // If no GPU devices, try to get CPU devices
+        err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_CPU, 0, nullptr, &num_devices);
+        if (err != CL_SUCCESS || num_devices == 0) {
+            std::cerr << "OpenCL: No GPU or CPU devices found" << std::endl;
+            return false;
+        }
+    }
+    
+    // Get the device IDs
+    std::vector<cl_device_id> devices(num_devices);
+    err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, num_devices, devices.data(), nullptr);
     if (err != CL_SUCCESS) {
-        throw std::runtime_error("Failed to create OpenCL context");
+        err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_CPU, num_devices, devices.data(), nullptr);
+        if (err != CL_SUCCESS) {
+            std::cerr << "OpenCL: Failed to get device IDs: " << err << std::endl;
+            return false;
+        }
+    }
+    
+    // Use the first device
+    device = devices[0];
+    
+    // Create an OpenCL context
+    cl_context_properties properties[] = {
+        CL_CONTEXT_PLATFORM, (cl_context_properties)platform,
+        0
+    };
+    
+    context = clCreateContext(properties, 1, &device, nullptr, nullptr, &err);
+    if (err != CL_SUCCESS) {
+        std::cerr << "OpenCL: Failed to create context: " << err << std::endl;
+        return false;
+    }
+    
+    return true;
+}
+
+// Return the current backend type
+BackendType get_backend_type() {
+    return BackendType::OpenCL;
+}
+
+// GpuModule implementation for OpenCL
+GpuModule::GpuModule(const std::string& ir_code) 
+    : program_(nullptr), context_(nullptr), device_(nullptr) {
+    cl_int err;
+    
+    // Get device and context
+    if (!get_opencl_device_and_context(device_, context_)) {
+        throw std::runtime_error("Failed to get OpenCL device and context");
     }
     
     // Create program from source
-    const char* source_ptr = ptx_code.c_str();
-    size_t source_size = ptx_code.size();
-    cl_program program = clCreateProgramWithSource(context, 1, &source_ptr, &source_size, &err);
+    const char* source_ptr = ir_code.c_str();
+    size_t source_len = ir_code.length();
+    
+    program_ = clCreateProgramWithSource(context_, 1, &source_ptr, &source_len, &err);
     if (err != CL_SUCCESS) {
-        clReleaseContext(context);
+        std::cerr << "OpenCL: Failed to create program from source: " << err << std::endl;
         throw std::runtime_error("Failed to create OpenCL program");
     }
     
-    // Build program
-    err = clBuildProgram(program, 1, &device, "", nullptr, nullptr);
+    // Build the program
+    err = clBuildProgram(program_, 1, &device_, nullptr, nullptr, nullptr);
     if (err != CL_SUCCESS) {
-        // Get build error log
+        // If there was a build error, get the build log
         size_t log_size;
-        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, nullptr, &log_size);
-        std::vector<char> log(log_size);
-        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, log_size, log.data(), nullptr);
+        clGetProgramBuildInfo(program_, device_, CL_PROGRAM_BUILD_LOG, 0, nullptr, &log_size);
         
-        std::string error_msg = "OpenCL program build failed: ";
-        error_msg.append(log.data(), log_size);
+        std::vector<char> log(log_size + 1);
+        clGetProgramBuildInfo(program_, device_, CL_PROGRAM_BUILD_LOG, log_size, log.data(), nullptr);
+        log[log_size] = '\0';
         
-        clReleaseProgram(program);
-        clReleaseContext(context);
-        throw std::runtime_error(error_msg);
-    }
-    
-    // Store the program, context, and device in a custom struct
-    struct OpenCLModule {
-        cl_program program;
-        cl_context context;
-        cl_device_id device;
-    };
-    
-    OpenCLModule* ocl_module = new OpenCLModule{program, context, device};
-    module_ = reinterpret_cast<CUmodule>(ocl_module);
-}
-
-CudaModule::CudaModule(const std::vector<char>& ptx_data) : module_(nullptr) {
-    // Convert vector<char> to string and delegate to the string constructor
-    std::string source_code(ptx_data.begin(), ptx_data.end());
-    *this = CudaModule(source_code); // Use string constructor
-}
-
-CudaModule::~CudaModule() {
-    if (module_) {
-        struct OpenCLModule {
-            cl_program program;
-            cl_context context;
-            cl_device_id device;
-        };
-        
-        auto* ocl_module = reinterpret_cast<OpenCLModule*>(module_);
-        clReleaseProgram(ocl_module->program);
-        clReleaseContext(ocl_module->context);
-        delete ocl_module;
+        std::cerr << "OpenCL: Program build failed: " << log.data() << std::endl;
+        clReleaseProgram(program_);
+        program_ = nullptr;
+        throw std::runtime_error("Failed to build OpenCL program");
     }
 }
 
-CudaModule::CudaModule(CudaModule&& other) noexcept : module_(other.module_) {
-    other.module_ = nullptr;
+GpuModule::GpuModule(const std::vector<char>& ir_data) 
+    : program_(nullptr), context_(nullptr), device_(nullptr) {
+    if (ir_data.empty()) {
+        throw std::runtime_error("Empty IR data");
+    }
+    
+    std::string ir_code(ir_data.begin(), ir_data.end());
+    *this = GpuModule(ir_code);
 }
 
-CudaModule& CudaModule::operator=(CudaModule&& other) noexcept {
-    if (this != &other) {
-        if (module_) {
-            struct OpenCLModule {
-                cl_program program;
-                cl_context context;
-                cl_device_id device;
-            };
-            
-            auto* ocl_module = reinterpret_cast<OpenCLModule*>(module_);
-            clReleaseProgram(ocl_module->program);
-            clReleaseContext(ocl_module->context);
-            delete ocl_module;
+GpuModule::~GpuModule() {
+    for (auto kernel : kernels_) {
+        if (kernel) {
+            clReleaseKernel(kernel);
         }
-        module_ = other.module_;
-        other.module_ = nullptr;
+    }
+    
+    if (program_) {
+        clReleaseProgram(program_);
+    }
+    
+    if (context_) {
+        clReleaseContext(context_);
+    }
+}
+
+GpuModule::GpuModule(GpuModule&& other) noexcept
+    : program_(other.program_), context_(other.context_), device_(other.device_), 
+      kernels_(std::move(other.kernels_)) {
+    other.program_ = nullptr;
+    other.context_ = nullptr;
+    other.device_ = nullptr;
+}
+
+GpuModule& GpuModule::operator=(GpuModule&& other) noexcept {
+    if (this != &other) {
+        // Clean up existing resources
+        for (auto kernel : kernels_) {
+            if (kernel) {
+                clReleaseKernel(kernel);
+            }
+        }
+        
+        if (program_) {
+            clReleaseProgram(program_);
+        }
+        
+        if (context_) {
+            clReleaseContext(context_);
+        }
+        
+        // Move resources from other
+        program_ = other.program_;
+        context_ = other.context_;
+        device_ = other.device_;
+        kernels_ = std::move(other.kernels_);
+        
+        // Reset other
+        other.program_ = nullptr;
+        other.context_ = nullptr;
+        other.device_ = nullptr;
     }
     return *this;
 }
 
-CUfunction CudaModule::get_function(const std::string& function_name) const {
-    if (!module_) {
-        throw std::runtime_error("Module is not loaded");
+cl_kernel GpuModule::get_function(const std::string& function_name) const {
+    if (!is_valid()) {
+        throw std::runtime_error("Invalid OpenCL program");
     }
-    
-    struct OpenCLModule {
-        cl_program program;
-        cl_context context;
-        cl_device_id device;
-    };
-    
-    auto* ocl_module = reinterpret_cast<OpenCLModule*>(module_);
     
     cl_int err;
-    cl_kernel kernel = clCreateKernel(ocl_module->program, function_name.c_str(), &err);
+    cl_kernel kernel = clCreateKernel(program_, function_name.c_str(), &err);
     if (err != CL_SUCCESS) {
-        throw std::runtime_error("Failed to get OpenCL kernel: " + function_name);
+        std::cerr << "OpenCL: Failed to create kernel '" << function_name << "': " << err << std::endl;
+        return nullptr;
     }
     
-    // For OpenCL, we'll return the kernel as the function pointer
-    return reinterpret_cast<CUfunction>(kernel);
-}
-
-// KernelLoader implementation
-std::unique_ptr<CudaModule> KernelLoader::load_from_ptx(const std::string& ptx_code) const {
-    if (ptx_code.empty()) {
-        throw std::invalid_argument("OpenCL source code cannot be empty");
-    }
+    // Store the kernel for cleanup
+    kernels_.push_back(kernel);
     
-    return std::make_unique<CudaModule>(ptx_code);
+    return kernel;
 }
 
-std::unique_ptr<CudaModule> KernelLoader::load_from_file(const std::string& file_path) const {
-    auto source_data = read_file(file_path);
-    return std::make_unique<CudaModule>(source_data);
+// KernelLoader implementation for OpenCL
+std::unique_ptr<GpuModule> KernelLoader::load_from_ir(const std::string& ir_code) const {
+    try {
+        return std::make_unique<GpuModule>(ir_code);
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to load IR: " << e.what() << std::endl;
+        return nullptr;
+    }
 }
 
-std::unique_ptr<CudaModule> KernelLoader::load_from_cuda_source(
-    const std::string& cuda_source,
+std::unique_ptr<GpuModule> KernelLoader::load_from_file(const std::string& file_path) const {
+    try {
+        std::vector<char> ir_data = read_ir_file(file_path);
+        return std::make_unique<GpuModule>(ir_data);
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to load file " << file_path << ": " << e.what() << std::endl;
+        return nullptr;
+    }
+}
+
+std::unique_ptr<GpuModule> KernelLoader::load_from_source(
+    const std::string& source_code,
     const std::vector<std::string>& include_paths,
     const std::vector<std::string>& compile_options) const {
-    
-    // For OpenCL, we'll just pass through the source code directly
-    // We don't perform any source translation from CUDA to OpenCL in this simple implementation
-    return load_from_ptx(cuda_source);
+    try {
+        // For OpenCL, we can directly use the source code as IR
+        return load_from_ir(source_code);
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to load source: " << e.what() << std::endl;
+        return nullptr;
+    }
+}
+
+std::vector<char> KernelLoader::read_ir_file(const std::string& file_path) const {
+    return read_file(file_path);
 }
 
 std::vector<char> KernelLoader::read_file(const std::string& file_path) {
     std::ifstream file(file_path, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
-        throw std::runtime_error("Cannot open file: " + file_path);
+        throw std::runtime_error("Failed to open file: " + file_path);
     }
     
     std::streamsize size = file.tellg();
     file.seekg(0, std::ios::beg);
     
-    std::vector<char> buffer(size + 1);  // +1 for null terminator
+    std::vector<char> buffer(size);
     if (!file.read(buffer.data(), size)) {
         throw std::runtime_error("Failed to read file: " + file_path);
     }
     
-    buffer[size] = '\0';  // Null terminate for string handling
     return buffer;
 }
 
-std::string KernelLoader::compile_cuda_to_ptx(
-    const std::string& cuda_source,
+std::string KernelLoader::compile_source_to_ir(
+    const std::string& source_code,
     const std::vector<std::string>& include_paths,
     const std::vector<std::string>& compile_options) {
-    
-    // For OpenCL, we just return the source code directly
-    // No CUDA-to-PTX compilation is performed
-    return cuda_source;
+    // For OpenCL, we can use the source directly
+    return source_code;
 }
 
-bool KernelLoader::validate_ptx(const std::string& ptx_code) {
-    if (ptx_code.empty()) {
-        return false;
-    }
-    
-    // Basic validation for OpenCL source
-    // Check for OpenCL kernel function declaration
-    return ptx_code.find("__kernel") != std::string::npos ||
-           ptx_code.find("kernel") != std::string::npos;
+bool KernelLoader::validate_ir(const std::string& ir_code) {
+    // Basic validation - check if it contains some OpenCL keywords
+    return !ir_code.empty() && 
+           (ir_code.find("__kernel") != std::string::npos || 
+            ir_code.find("kernel") != std::string::npos);
 }
 
-std::vector<char> KernelLoader::read_ptx_file(const std::string& file_path) const {
-    return read_file(file_path);
-}
+} // namespace ebpf_gpu
 
-} // namespace ebpf_gpu 
+#endif // USE_OPENCL_BACKEND 
