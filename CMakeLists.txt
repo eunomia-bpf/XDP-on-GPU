@@ -115,54 +115,8 @@ if(USE_OPENCL_BACKEND)
     include_directories(${OpenCL_INCLUDE_DIRS})
 endif()
 
-# Library source files
-set(LIB_SOURCES
-    src/ebpf_gpu_processor.cpp
-    src/gpu_device_manager.cpp
-    src/kernel_loader.cpp
-    src/backend_factory.cpp
-)
-
-# Add backend-specific source files
-if(USE_CUDA_BACKEND)
-    list(APPEND LIB_SOURCES 
-        src/cuda_backend.cpp
-    )
-endif()
-
-if(USE_OPENCL_BACKEND)
-    list(APPEND LIB_SOURCES 
-        src/opencl_backend.cpp
-    )
-endif()
-
-# Create the library
-add_library(ebpf_gpu_processor STATIC ${LIB_SOURCES})
-
-# Set target properties
-set_target_properties(ebpf_gpu_processor PROPERTIES
-    POSITION_INDEPENDENT_CODE ON
-    CXX_STANDARD 17
-    CXX_STANDARD_REQUIRED ON
-)
-
-# Link backend-specific libraries
-if(USE_CUDA_BACKEND)
-    target_link_libraries(ebpf_gpu_processor 
-        CUDA::cuda_driver 
-        CUDA::cudart
-    )
-    
-    set_target_properties(ebpf_gpu_processor PROPERTIES
-        CUDA_SEPARABLE_COMPILATION ON
-    )
-endif()
-
-if(USE_OPENCL_BACKEND)
-    target_link_libraries(ebpf_gpu_processor 
-        ${OpenCL_LIBRARIES}
-    )
-endif()
+# Add the source directory which contains our main code and backend subdirectories
+add_subdirectory(src)
 
 # Build the examples
 option(BUILD_EXAMPLES "Build example applications" ON)
@@ -177,16 +131,7 @@ if(BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
-# Installation
-install(TARGETS ebpf_gpu_processor
-    ARCHIVE DESTINATION lib
-    LIBRARY DESTINATION lib
-)
-
-install(DIRECTORY include/
-    DESTINATION include
-    FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp"
-)
+# Installation targets are now handled in src/CMakeLists.txt
 
 # Print configuration summary
 message(STATUS "eBPF-on-GPU configuration:")
