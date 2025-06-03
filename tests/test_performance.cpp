@@ -89,7 +89,7 @@ bool setup_test_environment(EventProcessor& processor) {
         return false;
     }
     
-    ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
     return load_result == ProcessingResult::Success;
 }
 
@@ -132,7 +132,7 @@ TEST_CASE("Performance - Basic Operations", "[performance][benchmark]") {
     
     // Setup processor once outside benchmark
     EventProcessor processor;
-    ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
     REQUIRE(load_result == ProcessingResult::Success);
 
     // Warm up GPU (first run is often slower)
@@ -179,7 +179,7 @@ TEST_CASE("Performance - Zero-Copy vs Normal Copy", "[performance][benchmark]") 
             // Test with normal copy (default config)
             {
                 EventProcessor processor;
-                ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+                ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
                 REQUIRE(load_result == ProcessingResult::Success);
                 
                 std::string bench_name = "Normal copy - " + format_size(event_count) + " events";
@@ -194,7 +194,7 @@ TEST_CASE("Performance - Zero-Copy vs Normal Copy", "[performance][benchmark]") 
                 config.use_zero_copy = true;
                 
                 EventProcessor processor(config);
-                ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+                ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
                 REQUIRE(load_result == ProcessingResult::Success);
                 
                 // Register the buffer for zero-copy
@@ -249,7 +249,7 @@ TEST_CASE("Performance - Unified Memory vs Normal Copy", "[performance][benchmar
             // Test with normal copy (default config)
             {
                 EventProcessor processor;
-                ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+                ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
                 REQUIRE(load_result == ProcessingResult::Success);
                 
                 std::string bench_name = "Normal copy - " + format_size(event_count) + " events";
@@ -264,7 +264,7 @@ TEST_CASE("Performance - Unified Memory vs Normal Copy", "[performance][benchmar
                 config.use_unified_memory = true;
                 
                 EventProcessor processor(config);
-                ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+                ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
                 REQUIRE(load_result == ProcessingResult::Success);
                 
                 std::string bench_name = "Unified memory - " + format_size(event_count) + " events";
@@ -289,7 +289,7 @@ TEST_CASE("Performance - Scaling Test", "[performance][benchmark]") {
     
     // Setup processor once
     EventProcessor processor;
-    ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
     REQUIRE(load_result == ProcessingResult::Success);
     
     // Test different event counts
@@ -341,7 +341,7 @@ TEST_CASE("Performance - Single vs Multiple Events", "[performance][benchmark]")
     
     // Setup processor once
     EventProcessor processor;
-    ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
     REQUIRE(load_result == ProcessingResult::Success);
     
     // Pre-create test data
@@ -392,7 +392,7 @@ TEST_CASE("Performance - Memory Transfer vs Compute", "[performance][benchmark]"
     }
     
     EventProcessor processor;
-    ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
     REQUIRE(load_result == ProcessingResult::Success);
     
     auto run_memory_transfer_test = [&](const std::string& test_name, size_t event_size_multiplier) {
@@ -456,7 +456,7 @@ TEST_CASE("Performance - Pinned vs Pageable Memory", "[performance][benchmark]")
     }
     
     EventProcessor processor;
-    ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
     REQUIRE(load_result == ProcessingResult::Success);
     
     for (size_t event_count : test_config::scaling_sizes) {
@@ -513,7 +513,7 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
     config.max_stream_count = 4; // Use 4 CUDA streams
     
     EventProcessor processor(config);
-    ProcessingResult load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+    ProcessingResult load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
     REQUIRE(load_result == ProcessingResult::Success);
     
     // Use a smaller event count for tests to prevent timeouts
@@ -577,7 +577,7 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
             
             // Update processor with new config
             processor = EventProcessor(config);
-            ProcessingResult batch_load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+            ProcessingResult batch_load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
             REQUIRE(batch_load_result == ProcessingResult::Success);
             
             // Reset event states for this test
@@ -601,7 +601,7 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
         
         // Restore original config
         processor = EventProcessor(original_config);
-        ProcessingResult restore_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+        ProcessingResult restore_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
         REQUIRE(restore_result == ProcessingResult::Success);
     }
     
@@ -620,7 +620,7 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
             
             // Recreate processor with new config
             processor = EventProcessor(config);
-            ProcessingResult stream_load_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+            ProcessingResult stream_load_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
             REQUIRE(stream_load_result == ProcessingResult::Success);
             
             // Reset event states for this test
@@ -640,7 +640,7 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
         
         // Restore original config
         processor = EventProcessor(original_config);
-        ProcessingResult restore_result = processor.load_kernel_from_ptx(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
+        ProcessingResult restore_result = processor.load_kernel_from_ir(ptx_code, kernel_names::DEFAULT_TEST_KERNEL);
         REQUIRE(restore_result == ProcessingResult::Success);
     }
 }

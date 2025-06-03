@@ -106,7 +106,7 @@ EventProcessor processor(config);
 
 // Load kernel from PTX
 std::string ptx_code = load_ptx_from_file("filter.ptx");
-processor.load_kernel_from_ptx(ptx_code, "packet_filter");
+processor.load_kernel_from_ir(ptx_code, "packet_filter");
 
 // Process events
 std::vector<NetworkEvent> events = create_test_events(1000);

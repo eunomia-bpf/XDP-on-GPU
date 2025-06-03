@@ -89,7 +89,7 @@ void EventProcessor::Impl::initialize_device() {
     initialize_streams();
 }
 
-ProcessingResult EventProcessor::Impl::load_kernel_from_ptx(const std::string& ptx_code, const std::string& function_name) {
+ProcessingResult EventProcessor::Impl::load_kernel_from_ir(const std::string& ptx_code, const std::string& function_name) {
     try {
         if (ptx_code.empty()) {
             return ProcessingResult::InvalidInput;
@@ -574,8 +574,8 @@ EventProcessor::~EventProcessor() = default;
 EventProcessor::EventProcessor(EventProcessor&&) noexcept = default;
 EventProcessor& EventProcessor::operator=(EventProcessor&&) noexcept = default;
 
-ProcessingResult EventProcessor::load_kernel_from_ptx(const std::string& ptx_code, const std::string& function_name) {
-    return pimpl_->load_kernel_from_ptx(ptx_code, function_name);
+ProcessingResult EventProcessor::load_kernel_from_ir(const std::string& ptx_code, const std::string& function_name) {
+    return pimpl_->load_kernel_from_ir(ptx_code, function_name);
 }
 
 ProcessingResult EventProcessor::load_kernel_from_file(const std::string& file_path, const std::string& function_name) {

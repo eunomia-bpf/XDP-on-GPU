@@ -89,12 +89,12 @@ std::string backend_type_to_string(ebpf_gpu::BackendType type) {
 std::string get_default_kernel_file(ebpf_gpu::BackendType type) {
     switch (type) {
         case ebpf_gpu::BackendType::CUDA:
-            return "examples/simple_packet_filter.cu";
+            return "../examples/simple_packet_filter.cu";
         case ebpf_gpu::BackendType::OpenCL:
-            return "examples/simple_packet_filter_cl.cl";
+            return "../examples/simple_packet_filter_cl.cl";
         default:
             // Default to CUDA
-            return "examples/simple_packet_filter.cu";
+            return "../examples/simple_packet_filter.cu";
     }
 }
 
@@ -154,39 +154,81 @@ int main(int argc, char* argv[]) {
         
         std::cout << "eBPF program loaded successfully\n";
         
-        // Prepare input and output buffers
-        std::vector<void*> input_ptrs(num_packets);
-        std::vector<uint32_t> input_sizes(num_packets);
+        // Create a buffer for results (1 = accept, 0 = drop)
+        std::vector<uint32_t> results(num_packets, 0);
         
+        // Prepare packet data for GPU processing
+        // We need to flatten the packet data into a single buffer and keep track of offsets
+        std::vector<uint8_t> packet_data_buffer;
+        std::vector<uint32_t> packet_offsets(num_packets + 1, 0);
+        
+        // Calculate total buffer size and offsets
+        size_t total_size = 0;
         for (int i = 0; i < num_packets; i++) {
-            input_ptrs[i] = packets[i].data;
-            input_sizes[i] = packets[i].length;
+            packet_offsets[i] = total_size;
+            total_size += packets[i].length;
+        }
+        packet_offsets[num_packets] = total_size;
+        
+        // Allocate and fill packet data buffer
+        packet_data_buffer.resize(total_size);
+        for (int i = 0; i < num_packets; i++) {
+            std::memcpy(packet_data_buffer.data() + packet_offsets[i], 
+                       packets[i].data, 
+                       packets[i].length);
+        }
+        
+        // Custom event structure that matches our OpenCL kernel expectations
+        struct PacketEvent {
+            uint32_t offset;     // Offset in the packet data buffer
+            uint32_t length;     // Length of the packet
+            uint32_t result;     // Result of processing (output)
+        };
+        
+        // Create event buffer
+        std::vector<PacketEvent> events(num_packets);
+        for (int i = 0; i < num_packets; i++) {
+            events[i].offset = packet_offsets[i];
+            events[i].length = packets[i].length;
+            events[i].result = 0;  // Initialize to 0 (drop)
         }
         
         // Execute the eBPF program on the GPU
         auto start_time = std::chrono::high_resolution_clock::now();
         
+        // Set up kernel arguments for both packet data and event buffer
+        std::vector<void*> args = {
+            packet_data_buffer.data(),   // Packet data buffer
+            events.data()                // Event buffer with offsets, lengths, and results
+        };
+        
         // Process packets in batch
-        result = processor.process_events(packets.data(), 
-                                          num_packets * sizeof(SimplePacket),
-                                          num_packets);
+        result = processor.process_events(events.data(), 
+                                          events.size() * sizeof(PacketEvent),
+                                          events.size());
         
         if (result != ebpf_gpu::ProcessingResult::Success) {
             std::cerr << "Failed to run eBPF program" << std::endl;
             return 1;
         }
         
+        // Now we can analyze the results
+        int accepted_packets = 0;
+        for (int i = 0; i < num_packets; i++) {
+            if (events[i].result == 1) {
+                accepted_packets++;
+            }
+        }
+        
         auto end_time = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-        
-        // Here we would normally analyze the results
-        // Since we don't have direct access to the results in this example,
-        // we'll just print some stats
         
         std::cout << "eBPF program executed successfully\n";
         std::cout << "Execution time: " << duration.count() / 1000.0 << " ms\n";
         std::cout << "Throughput: " << (num_packets * 1000000.0 / duration.count()) 
-                  << " packets/second\n\n";
+                  << " packets/second\n";
+        std::cout << "Accepted packets: " << accepted_packets << " out of " << num_packets 
+                  << " (" << (accepted_packets * 100.0 / num_packets) << "%)\n\n";
         
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;

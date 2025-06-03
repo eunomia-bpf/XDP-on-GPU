@@ -150,7 +150,7 @@ void EventProcessor::Impl::initialize_device() {
     initialize_command_queues();
 }
 
-ProcessingResult EventProcessor::Impl::load_kernel_from_ptx(const std::string& ptx_code, const std::string& function_name) {
+ProcessingResult EventProcessor::Impl::load_kernel_from_ir(const std::string& ptx_code, const std::string& function_name) {
     try {
         if (ptx_code.empty()) {
             return ProcessingResult::InvalidInput;
@@ -229,8 +229,8 @@ ProcessingResult EventProcessor::Impl::load_kernel_from_file(const std::string& 
         std::string source_code((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
         file.close();
         
-        // Use load_kernel_from_ptx (which is actually OpenCL source code in this implementation)
-        return load_kernel_from_ptx(source_code, function_name);
+        // Use load_kernel_from_ir (which is actually OpenCL source code in this implementation)
+        return load_kernel_from_ir(source_code, function_name);
     } catch (const std::invalid_argument&) {
         return ProcessingResult::InvalidInput;
     } catch (const std::runtime_error&) {
@@ -253,7 +253,7 @@ ProcessingResult EventProcessor::Impl::load_kernel_from_source(const std::string
         
         // For OpenCL, we just pass through the source code directly
         // We don't perform any source translation from CUDA to OpenCL in this simple implementation
-        return load_kernel_from_ptx(cuda_source, function_name);
+        return load_kernel_from_ir(cuda_source, function_name);
     } catch (const std::invalid_argument&) {
         return ProcessingResult::InvalidInput;
     } catch (const std::runtime_error&) {
@@ -744,8 +744,8 @@ EventProcessor::~EventProcessor() = default;
 EventProcessor::EventProcessor(EventProcessor&&) noexcept = default;
 EventProcessor& EventProcessor::operator=(EventProcessor&&) noexcept = default;
 
-ProcessingResult EventProcessor::load_kernel_from_ptx(const std::string& ptx_code, const std::string& function_name) {
-    return pimpl_->load_kernel_from_ptx(ptx_code, function_name);
+ProcessingResult EventProcessor::load_kernel_from_ir(const std::string& ptx_code, const std::string& function_name) {
+    return pimpl_->load_kernel_from_ir(ptx_code, function_name);
 }
 
 ProcessingResult EventProcessor::load_kernel_from_file(const std::string& file_path, const std::string& function_name) {

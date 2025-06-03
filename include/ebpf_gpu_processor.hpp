@@ -63,7 +63,7 @@ public:
     EventProcessor& operator=(EventProcessor&&) noexcept;
 
     // Kernel management
-    ProcessingResult load_kernel_from_ptx(const std::string& ptx_code, const std::string& function_name);
+    ProcessingResult load_kernel_from_ir(const std::string& ptx_code, const std::string& function_name);
     ProcessingResult load_kernel_from_file(const std::string& file_path, const std::string& function_name);
     ProcessingResult load_kernel_from_source(const std::string& cuda_source, const std::string& function_name,
                                 const std::vector<std::string>& include_paths = {},
