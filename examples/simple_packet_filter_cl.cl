@@ -6,7 +6,7 @@
 /**
  * A simple packet filter function that checks if a packet contains a specific pattern.
  * 
- * @param packet_data The raw packet data buffer
+ * @param packet_data The raw packet data buffer, with the result appended at the end
  * @param packet_length The length of the packet in bytes
  * @param result Output parameter - set to 1 to accept packet, 0 to drop
  */

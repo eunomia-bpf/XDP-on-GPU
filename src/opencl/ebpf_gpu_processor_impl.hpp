@@ -21,11 +21,11 @@ public:
     Impl(Impl&&) = default;
     Impl& operator=(Impl&&) = default;
 
-    ProcessingResult load_kernel_from_ir(const std::string& ptx_code, const std::string& function_name);
+    ProcessingResult load_kernel_from_ir(const std::string& ir_code, const std::string& function_name);
     ProcessingResult load_kernel_from_file(const std::string& file_path, const std::string& function_name);
-    ProcessingResult load_kernel_from_source(const std::string& cuda_source, const std::string& function_name,
-                                const std::vector<std::string>& include_paths,
-                                const std::vector<std::string>& compile_options);
+    ProcessingResult load_kernel_from_source(const std::string& source_code, const std::string& function_name,
+                                const std::vector<std::string>& include_paths = {},
+                                const std::vector<std::string>& compile_options = {});
 
     ProcessingResult process_event(void* event_data, size_t event_size);
     ProcessingResult process_events(void* events_buffer, size_t buffer_size, size_t event_count,

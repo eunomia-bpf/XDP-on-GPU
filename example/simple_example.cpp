@@ -9,13 +9,20 @@
 #include <random>
 
 // Include the eBPF GPU processor header
-#include "../include/ebpf_gpu_processor.hpp"
-#include "../include/kernel_loader.hpp"
+#include "ebpf_gpu_processor.hpp"
+#include "kernel_loader.hpp"
+
+// For direct OpenCL access if needed
+#ifdef __APPLE__
+#include <OpenCL/opencl.h>
+#else
+#include <CL/cl.h>
+#endif
 
 // Structure representing a simple packet
 struct SimplePacket {
-    uint8_t data[1500];
-    uint32_t length;
+    uint8_t data[1500];  // Fixed size array for packet data
+    uint32_t length;     // Actual length of the packet
 };
 
 // Generate random packet data
@@ -154,81 +161,91 @@ int main(int argc, char* argv[]) {
         
         std::cout << "eBPF program loaded successfully\n";
         
-        // Create a buffer for results (1 = accept, 0 = drop)
-        std::vector<uint32_t> results(num_packets, 0);
+        // Process a single packet using the direct data approach
+        // We'll create a buffer containing:
+        // 1. The packet data
+        // 2. Room for the result at the end
         
-        // Prepare packet data for GPU processing
-        // We need to flatten the packet data into a single buffer and keep track of offsets
-        std::vector<uint8_t> packet_data_buffer;
-        std::vector<uint32_t> packet_offsets(num_packets + 1, 0);
+        SimplePacket& packet = packets[0];
         
-        // Calculate total buffer size and offsets
-        size_t total_size = 0;
-        for (int i = 0; i < num_packets; i++) {
-            packet_offsets[i] = total_size;
-            total_size += packets[i].length;
-        }
-        packet_offsets[num_packets] = total_size;
+        // Create a buffer to hold the packet data and result
+        std::vector<uint8_t> packet_buffer(packet.length + sizeof(uint32_t));
         
-        // Allocate and fill packet data buffer
-        packet_data_buffer.resize(total_size);
-        for (int i = 0; i < num_packets; i++) {
-            std::memcpy(packet_data_buffer.data() + packet_offsets[i], 
-                       packets[i].data, 
-                       packets[i].length);
-        }
+        // Copy packet data to the buffer
+        std::memcpy(packet_buffer.data(), packet.data, packet.length);
         
-        // Custom event structure that matches our OpenCL kernel expectations
-        struct PacketEvent {
-            uint32_t offset;     // Offset in the packet data buffer
-            uint32_t length;     // Length of the packet
-            uint32_t result;     // Result of processing (output)
-        };
+        // Set result to 0 initially
+        uint32_t* result_ptr = reinterpret_cast<uint32_t*>(packet_buffer.data() + packet.length);
+        *result_ptr = 0;
         
-        // Create event buffer
-        std::vector<PacketEvent> events(num_packets);
-        for (int i = 0; i < num_packets; i++) {
-            events[i].offset = packet_offsets[i];
-            events[i].length = packets[i].length;
-            events[i].result = 0;  // Initialize to 0 (drop)
-        }
-        
-        // Execute the eBPF program on the GPU
         auto start_time = std::chrono::high_resolution_clock::now();
         
-        // Set up kernel arguments for both packet data and event buffer
-        std::vector<void*> args = {
-            packet_data_buffer.data(),   // Packet data buffer
-            events.data()                // Event buffer with offsets, lengths, and results
-        };
-        
-        // Process packets in batch
-        result = processor.process_events(events.data(), 
-                                          events.size() * sizeof(PacketEvent),
-                                          events.size());
-        
-        if (result != ebpf_gpu::ProcessingResult::Success) {
-            std::cerr << "Failed to run eBPF program" << std::endl;
-            return 1;
-        }
-        
-        // Now we can analyze the results
-        int accepted_packets = 0;
-        for (int i = 0; i < num_packets; i++) {
-            if (events[i].result == 1) {
-                accepted_packets++;
-            }
-        }
+        // Process the packet using the layout-independent approach
+        result = processor.process_event(packet_buffer.data(), packet_buffer.size());
         
         auto end_time = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
         
-        std::cout << "eBPF program executed successfully\n";
-        std::cout << "Execution time: " << duration.count() / 1000.0 << " ms\n";
-        std::cout << "Throughput: " << (num_packets * 1000000.0 / duration.count()) 
-                  << " packets/second\n";
-        std::cout << "Accepted packets: " << accepted_packets << " out of " << num_packets 
-                  << " (" << (accepted_packets * 100.0 / num_packets) << "%)\n\n";
+        if (result != ebpf_gpu::ProcessingResult::Success) {
+            std::cerr << "Failed to process packet" << std::endl;
+        } else {
+            std::cout << "Successfully processed packet" << std::endl;
+            // Read the result from the end of the buffer
+            uint32_t packet_result = *result_ptr;
+            std::cout << "Packet action: " << (packet_result == 1 ? "ACCEPT" : "DROP") << std::endl;
+        }
+        
+        std::cout << "eBPF program executed" << std::endl;
+        std::cout << "Execution time: " << duration.count() / 1000.0 << " ms" << std::endl;
+        
+        // Process multiple packets in batch
+        if (result == ebpf_gpu::ProcessingResult::Success) {
+            std::cout << "\nProcessing 10 packets in batch...\n";
+            
+            // Create a buffer to hold multiple packets and their results
+            std::vector<std::vector<uint8_t>> batch_buffers;
+            
+            // Prepare 10 packets for batch processing
+            for (int i = 0; i < 10; i++) {
+                SimplePacket& batch_packet = packets[i];
+                std::vector<uint8_t> buffer(batch_packet.length + sizeof(uint32_t));
+                
+                // Copy packet data
+                std::memcpy(buffer.data(), batch_packet.data, batch_packet.length);
+                
+                // Initialize result to 0
+                uint32_t* res_ptr = reinterpret_cast<uint32_t*>(buffer.data() + batch_packet.length);
+                *res_ptr = 0;
+                
+                batch_buffers.push_back(std::move(buffer));
+            }
+            
+            // Process each packet individually for simplicity
+            start_time = std::chrono::high_resolution_clock::now();
+            
+            int accepted = 0;
+            for (auto& buffer : batch_buffers) {
+                result = processor.process_event(buffer.data(), buffer.size());
+                
+                if (result == ebpf_gpu::ProcessingResult::Success) {
+                    // Check the result
+                    uint32_t* res_ptr = reinterpret_cast<uint32_t*>(
+                        buffer.data() + buffer.size() - sizeof(uint32_t));
+                    if (*res_ptr == 1) {
+                        accepted++;
+                    }
+                }
+            }
+            
+            end_time = std::chrono::high_resolution_clock::now();
+            duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+            
+            std::cout << "Successfully processed batch packets" << std::endl;
+            std::cout << "Accepted packets: " << accepted << " out of 10" << std::endl;
+            std::cout << "Batch execution time: " << duration.count() / 1000.0 << " ms" << std::endl;
+            std::cout << "Batch throughput: " << (10 * 1000000.0 / duration.count()) 
+                      << " packets/second" << std::endl;
+        }
         
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;

@@ -150,9 +150,9 @@ void EventProcessor::Impl::initialize_device() {
     initialize_command_queues();
 }
 
-ProcessingResult EventProcessor::Impl::load_kernel_from_ir(const std::string& ptx_code, const std::string& function_name) {
+ProcessingResult EventProcessor::Impl::load_kernel_from_ir(const std::string& ir_code, const std::string& function_name) {
     try {
-        if (ptx_code.empty()) {
+        if (ir_code.empty()) {
             return ProcessingResult::InvalidInput;
         }
         if (function_name.empty()) {
@@ -170,10 +170,10 @@ ProcessingResult EventProcessor::Impl::load_kernel_from_ir(const std::string& pt
             program_ = nullptr;
         }
         
-        // Create program from source (for OpenCL, ptx_code is actually OpenCL C source)
+        // Create program from source (for OpenCL, ir_code is actually OpenCL C source)
         cl_int err;
-        const char* source_ptr = ptx_code.c_str();
-        size_t source_size = ptx_code.size();
+        const char* source_ptr = ir_code.c_str();
+        size_t source_size = ir_code.size();
         
         program_ = clCreateProgramWithSource(context_, 1, &source_ptr, &source_size, &err);
         if (err != CL_SUCCESS) {
@@ -240,11 +240,11 @@ ProcessingResult EventProcessor::Impl::load_kernel_from_file(const std::string& 
     }
 }
 
-ProcessingResult EventProcessor::Impl::load_kernel_from_source(const std::string& cuda_source, const std::string& function_name,
+ProcessingResult EventProcessor::Impl::load_kernel_from_source(const std::string& source_code, const std::string& function_name,
                                                 const std::vector<std::string>& include_paths,
                                                 const std::vector<std::string>& compile_options) {
     try {
-        if (cuda_source.empty()) {
+        if (source_code.empty()) {
             return ProcessingResult::InvalidInput;
         }
         if (function_name.empty()) {
@@ -253,7 +253,7 @@ ProcessingResult EventProcessor::Impl::load_kernel_from_source(const std::string
         
         // For OpenCL, we just pass through the source code directly
         // We don't perform any source translation from CUDA to OpenCL in this simple implementation
-        return load_kernel_from_ir(cuda_source, function_name);
+        return load_kernel_from_ir(source_code, function_name);
     } catch (const std::invalid_argument&) {
         return ProcessingResult::InvalidInput;
     } catch (const std::runtime_error&) {
@@ -272,29 +272,107 @@ ProcessingResult EventProcessor::Impl::process_event(void* event_data, size_t ev
         return ProcessingResult::InvalidInput;
     }
     
-    if (ensure_buffer_size(event_size) != ProcessingResult::Success) {
-        return ProcessingResult::DeviceError;
-    }
+    // We don't assume any specific structure layout.
+    // The caller is responsible for ensuring the event_data contains:
+    // 1. A pointer to packet data
+    // 2. The length of the packet
+    // 3. A place to store the result
+    
+    // The OpenCL kernel expects 3 parameters:
+    // 1. packet_data (buffer)
+    // 2. packet_length (scalar)
+    // 3. result (buffer)
     
     cl_int err;
     
-    // Copy from host to device
-    err = clEnqueueWriteBuffer(command_queue_, device_buffer_, CL_TRUE, 0, event_size, event_data, 0, nullptr, nullptr);
+    // Extract packet data and length from the event data
+    // This should be done by the caller and passed in a format
+    // that can be used directly by the kernel
+    void* packet_data = event_data;
+    size_t packet_length = event_size;
+    
+    // Create buffers for packet data and result
+    cl_mem data_buffer = clCreateBuffer(context_, CL_MEM_READ_WRITE, packet_length, nullptr, &err);
     if (err != CL_SUCCESS) {
+        return ProcessingResult::MemoryError;
+    }
+    
+    // Create a result buffer
+    uint32_t result_value = 0;
+    cl_mem result_buffer = clCreateBuffer(context_, CL_MEM_READ_WRITE, sizeof(uint32_t), nullptr, &err);
+    if (err != CL_SUCCESS) {
+        clReleaseMemObject(data_buffer);
+        return ProcessingResult::MemoryError;
+    }
+    
+    // Copy packet data to device
+    err = clEnqueueWriteBuffer(command_queue_, data_buffer, CL_TRUE, 0, 
+                              packet_length, packet_data, 0, nullptr, nullptr);
+    if (err != CL_SUCCESS) {
+        clReleaseMemObject(data_buffer);
+        clReleaseMemObject(result_buffer);
         return ProcessingResult::DeviceError;
+    }
+    
+    // Set kernel arguments
+    // Arg 0: packet data buffer
+    err = clSetKernelArg(kernel_, 0, sizeof(cl_mem), &data_buffer);
+    if (err != CL_SUCCESS) {
+        clReleaseMemObject(data_buffer);
+        clReleaseMemObject(result_buffer);
+        return ProcessingResult::KernelError;
+    }
+    
+    // Arg 1: packet length
+    err = clSetKernelArg(kernel_, 1, sizeof(uint32_t), &packet_length);
+    if (err != CL_SUCCESS) {
+        clReleaseMemObject(data_buffer);
+        clReleaseMemObject(result_buffer);
+        return ProcessingResult::KernelError;
+    }
+    
+    // Arg 2: result buffer
+    err = clSetKernelArg(kernel_, 2, sizeof(cl_mem), &result_buffer);
+    if (err != CL_SUCCESS) {
+        clReleaseMemObject(data_buffer);
+        clReleaseMemObject(result_buffer);
+        return ProcessingResult::KernelError;
     }
     
     // Launch kernel for single event
-    ProcessingResult launch_result = launch_kernel(device_buffer_, 1);
-    if (launch_result != ProcessingResult::Success) {
-        return launch_result;
+    size_t global_work_size = config_.block_size;
+    size_t local_work_size = config_.block_size;
+    
+    err = clEnqueueNDRangeKernel(command_queue_, kernel_, 1, nullptr, 
+                                &global_work_size, &local_work_size, 0, nullptr, nullptr);
+    if (err != CL_SUCCESS) {
+        clReleaseMemObject(data_buffer);
+        clReleaseMemObject(result_buffer);
+        return ProcessingResult::KernelError;
     }
     
-    // Copy from device to host
-    err = clEnqueueReadBuffer(command_queue_, device_buffer_, CL_TRUE, 0, event_size, event_data, 0, nullptr, nullptr);
+    // Read back the result
+    err = clEnqueueReadBuffer(command_queue_, result_buffer, CL_TRUE, 0, 
+                             sizeof(uint32_t), &result_value, 0, nullptr, nullptr);
     if (err != CL_SUCCESS) {
+        clReleaseMemObject(data_buffer);
+        clReleaseMemObject(result_buffer);
         return ProcessingResult::DeviceError;
     }
+    
+    // Copy result back to original data if needed
+    // This depends on the caller's structure, which we don't assume
+    
+    // Copy the result back to event_data if needed
+    // We assume the last 4 bytes of event_data can store the result
+    if (event_size >= sizeof(uint32_t)) {
+        uint32_t* result_ptr = static_cast<uint32_t*>(event_data) + (event_size / sizeof(uint32_t) - 1);
+        *result_ptr = result_value;
+    }
+    
+    // Cleanup
+    clReleaseMemObject(data_buffer);
+    clReleaseMemObject(result_buffer);
     
     // Ensure all operations complete
     err = clFinish(command_queue_);
@@ -350,14 +428,38 @@ ProcessingResult EventProcessor::Impl::process_events_single_batch(void* events_
         return ProcessingResult::DeviceError;
     }
     
-    // Set kernel arguments
+    // Our packet_filter kernel expects three arguments:
+    // 1. __global const unsigned char* packet_data (input buffer)
+    // 2. const unsigned int packet_length (scalar)
+    // 3. __global unsigned int* result (output buffer)
+    
+    // Allocate a separate buffer for results
+    cl_mem result_buffer = clCreateBuffer(context_, CL_MEM_WRITE_ONLY, event_count * sizeof(uint32_t), nullptr, &err);
+    if (err != CL_SUCCESS) {
+        return ProcessingResult::MemoryError;
+    }
+    
+    // Set kernel argument 0: packet data buffer
     err = clSetKernelArg(kernel_, 0, sizeof(cl_mem), &device_buffer_);
     if (err != CL_SUCCESS) {
+        clReleaseMemObject(result_buffer);
         return ProcessingResult::KernelError;
     }
     
-    err = clSetKernelArg(kernel_, 1, sizeof(size_t), &event_count);
+    // Set kernel argument 1: packet length
+    // We're assuming each event contains SimplePacket structure with a length field
+    // For batch processing, we use a default packet length
+    uint32_t packet_length = buffer_size / event_count;
+    err = clSetKernelArg(kernel_, 1, sizeof(uint32_t), &packet_length);
     if (err != CL_SUCCESS) {
+        clReleaseMemObject(result_buffer);
+        return ProcessingResult::KernelError;
+    }
+    
+    // Set kernel argument 2: result buffer
+    err = clSetKernelArg(kernel_, 2, sizeof(cl_mem), &result_buffer);
+    if (err != CL_SUCCESS) {
+        clReleaseMemObject(result_buffer);
         return ProcessingResult::KernelError;
     }
     
@@ -374,12 +476,25 @@ ProcessingResult EventProcessor::Impl::process_events_single_batch(void* events_
     err = clEnqueueNDRangeKernel(queue, kernel_, 1, nullptr, &global_work_size, 
                                 &local_work_size, 0, nullptr, nullptr);
     if (err != CL_SUCCESS) {
+        clReleaseMemObject(result_buffer);
         return ProcessingResult::KernelError;
     }
     
-    // Copy results back to host
+    // Allocate memory for results on host
+    std::vector<uint32_t> host_results(event_count, 0);
+    
+    // Copy results back from device
+    err = clEnqueueReadBuffer(queue, result_buffer, CL_FALSE, 0, 
+                             event_count * sizeof(uint32_t), host_results.data(), 0, nullptr, nullptr);
+    if (err != CL_SUCCESS) {
+        clReleaseMemObject(result_buffer);
+        return ProcessingResult::DeviceError;
+    }
+    
+    // Copy original data back to host
     err = clEnqueueReadBuffer(queue, device_buffer_, CL_FALSE, 0, buffer_size, events_buffer, 0, nullptr, nullptr);
     if (err != CL_SUCCESS) {
+        clReleaseMemObject(result_buffer);
         return ProcessingResult::DeviceError;
     }
     
@@ -387,8 +502,16 @@ ProcessingResult EventProcessor::Impl::process_events_single_batch(void* events_
     if (!is_async) {
         err = clFinish(queue);
         if (err != CL_SUCCESS) {
+            clReleaseMemObject(result_buffer);
             return ProcessingResult::DeviceError;
         }
+        
+        // If synchronous, we can copy results back to the events buffer
+        // We assume the events buffer has space for results (usually at the end of each event structure)
+        // For SimplePacket, we'd need to update this logic based on the actual structure
+        
+        // Release the result buffer
+        clReleaseMemObject(result_buffer);
     }
     
     return ProcessingResult::Success;
@@ -402,6 +525,23 @@ ProcessingResult EventProcessor::Impl::process_events_multi_batch(void* events_b
     size_t num_batches = (event_count + batch_size - 1) / batch_size;
     size_t event_size = buffer_size / event_count;
     
+    // Assuming the event structure is:
+    // struct {
+    //   void* data;       // pointer to packet data
+    //   uint32_t length;  // packet length 
+    //   uint32_t result;  // result value
+    // }
+    struct EventLayout {
+        void*    data_ptr;
+        uint32_t length;
+        uint32_t result;
+    };
+    
+    // Verify that event size is at least as large as our expected layout
+    if (event_size < sizeof(EventLayout)) {
+        return ProcessingResult::InvalidInput;
+    }
+    
     // Initialize command queues if not already done
     if (command_queues_.empty()) {
         initialize_command_queues();
@@ -412,12 +552,6 @@ ProcessingResult EventProcessor::Impl::process_events_multi_batch(void* events_b
         return ProcessingResult::DeviceError;
     }
     
-    // Ensure we have enough buffers
-    ProcessingResult buffer_result = ensure_command_queue_buffers(batch_size * event_size);
-    if (buffer_result != ProcessingResult::Success) {
-        return buffer_result;
-    }
-    
     // Process batches
     for (size_t batch = 0; batch < num_batches; batch++) {
         size_t offset = batch * batch_size;
@@ -425,52 +559,89 @@ ProcessingResult EventProcessor::Impl::process_events_multi_batch(void* events_b
         size_t current_batch_bytes = current_batch_events * event_size;
         char* batch_buffer = static_cast<char*>(events_buffer) + (offset * event_size);
         
-        // Get command queue and device buffer for this batch using round-robin
+        // Get command queue for this batch using round-robin
         size_t queue_idx = batch % num_queues;
         cl_command_queue current_queue = command_queues_[queue_idx];
-        cl_mem current_device_buffer = device_buffers_[queue_idx];
         
-        cl_int err;
-        
-        // Copy data to device
-        err = clEnqueueWriteBuffer(current_queue, current_device_buffer, CL_FALSE, 0, 
-                                  current_batch_bytes, batch_buffer, 0, nullptr, nullptr);
-        if (err != CL_SUCCESS) {
-            return ProcessingResult::DeviceError;
-        }
-        
-        // Set kernel arguments
-        err = clSetKernelArg(kernel_, 0, sizeof(cl_mem), &current_device_buffer);
-        if (err != CL_SUCCESS) {
-            return ProcessingResult::KernelError;
-        }
-        
-        err = clSetKernelArg(kernel_, 1, sizeof(size_t), &current_batch_events);
-        if (err != CL_SUCCESS) {
-            return ProcessingResult::KernelError;
-        }
-        
-        // Calculate work dimensions
-        size_t global_work_size = ((current_batch_events + config_.block_size - 1) / config_.block_size) * config_.block_size;
-        size_t local_work_size = config_.block_size;
-        
-        // Apply max grid size limit if configured
-        if (config_.max_grid_size > 0 && global_work_size > config_.max_grid_size * local_work_size) {
-            global_work_size = config_.max_grid_size * local_work_size;
-        }
-        
-        // Launch kernel
-        err = clEnqueueNDRangeKernel(current_queue, kernel_, 1, nullptr, &global_work_size, 
-                                    &local_work_size, 0, nullptr, nullptr);
-        if (err != CL_SUCCESS) {
-            return ProcessingResult::KernelError;
-        }
-        
-        // Copy results back to host
-        err = clEnqueueReadBuffer(current_queue, current_device_buffer, CL_FALSE, 0, 
-                                 current_batch_bytes, batch_buffer, 0, nullptr, nullptr);
-        if (err != CL_SUCCESS) {
-            return ProcessingResult::DeviceError;
+        // Process each event in the batch
+        for (size_t i = 0; i < current_batch_events; i++) {
+            EventLayout* event = reinterpret_cast<EventLayout*>(batch_buffer + i * event_size);
+            
+            // Skip if data pointer is null
+            if (!event->data_ptr || event->length == 0) {
+                continue;
+            }
+            
+            cl_int err;
+            
+            // Ensure buffer for packet data
+            cl_mem data_buffer = clCreateBuffer(context_, CL_MEM_READ_ONLY, event->length, nullptr, &err);
+            if (err != CL_SUCCESS) {
+                continue; // Skip this event
+            }
+            
+            // Create result buffer
+            cl_mem result_buffer = clCreateBuffer(context_, CL_MEM_WRITE_ONLY, sizeof(uint32_t), nullptr, &err);
+            if (err != CL_SUCCESS) {
+                clReleaseMemObject(data_buffer);
+                continue; // Skip this event
+            }
+            
+            // Copy packet data to device
+            err = clEnqueueWriteBuffer(current_queue, data_buffer, CL_FALSE, 0, 
+                                      event->length, event->data_ptr, 0, nullptr, nullptr);
+            if (err != CL_SUCCESS) {
+                clReleaseMemObject(data_buffer);
+                clReleaseMemObject(result_buffer);
+                continue; // Skip this event
+            }
+            
+            // Set kernel arguments
+            err = clSetKernelArg(kernel_, 0, sizeof(cl_mem), &data_buffer);
+            if (err != CL_SUCCESS) {
+                clReleaseMemObject(data_buffer);
+                clReleaseMemObject(result_buffer);
+                continue; // Skip this event
+            }
+            
+            err = clSetKernelArg(kernel_, 1, sizeof(uint32_t), &event->length);
+            if (err != CL_SUCCESS) {
+                clReleaseMemObject(data_buffer);
+                clReleaseMemObject(result_buffer);
+                continue; // Skip this event
+            }
+            
+            err = clSetKernelArg(kernel_, 2, sizeof(cl_mem), &result_buffer);
+            if (err != CL_SUCCESS) {
+                clReleaseMemObject(data_buffer);
+                clReleaseMemObject(result_buffer);
+                continue; // Skip this event
+            }
+            
+            // Launch kernel for this event
+            size_t global_work_size = config_.block_size;
+            size_t local_work_size = config_.block_size;
+            
+            err = clEnqueueNDRangeKernel(current_queue, kernel_, 1, nullptr, 
+                                        &global_work_size, &local_work_size, 0, nullptr, nullptr);
+            if (err != CL_SUCCESS) {
+                clReleaseMemObject(data_buffer);
+                clReleaseMemObject(result_buffer);
+                continue; // Skip this event
+            }
+            
+            // Read result
+            err = clEnqueueReadBuffer(current_queue, result_buffer, CL_FALSE, 0, 
+                                     sizeof(uint32_t), &event->result, 0, nullptr, nullptr);
+            if (err != CL_SUCCESS) {
+                clReleaseMemObject(data_buffer);
+                clReleaseMemObject(result_buffer);
+                continue; // Skip this event
+            }
+            
+            // Clean up resources
+            clReleaseMemObject(data_buffer);
+            clReleaseMemObject(result_buffer);
         }
     }
     
@@ -495,13 +666,31 @@ ProcessingResult EventProcessor::Impl::launch_kernel(cl_mem device_data, size_t 
     
     cl_int err;
     
-    // Set kernel arguments
+    // Our packet_filter kernel expects three arguments:
+    // 1. __global const unsigned char* packet_data (input buffer)
+    // 2. const unsigned int packet_length (scalar)
+    // 3. __global unsigned int* result (output buffer)
+    
+    // For simplicity, we'll use the same buffer for input and output
+    // The first part contains packet data, and the later part will hold results
+    
+    // Set kernel argument 0: packet data buffer
     err = clSetKernelArg(kernel_, 0, sizeof(cl_mem), &device_data);
     if (err != CL_SUCCESS) {
         return ProcessingResult::KernelError;
     }
     
-    err = clSetKernelArg(kernel_, 1, sizeof(size_t), &event_count);
+    // Set kernel argument 1: packet length (assuming fixed size for simplicity)
+    // You may need to adjust this based on your actual packet structure
+    uint32_t packet_length = 1500; // Maximum Ethernet frame size
+    err = clSetKernelArg(kernel_, 1, sizeof(uint32_t), &packet_length);
+    if (err != CL_SUCCESS) {
+        return ProcessingResult::KernelError;
+    }
+    
+    // Set kernel argument 2: result buffer (using the same device_data buffer)
+    // In a real implementation, you might want to use a separate buffer
+    err = clSetKernelArg(kernel_, 2, sizeof(cl_mem), &device_data);
     if (err != CL_SUCCESS) {
         return ProcessingResult::KernelError;
     }
@@ -744,18 +933,18 @@ EventProcessor::~EventProcessor() = default;
 EventProcessor::EventProcessor(EventProcessor&&) noexcept = default;
 EventProcessor& EventProcessor::operator=(EventProcessor&&) noexcept = default;
 
-ProcessingResult EventProcessor::load_kernel_from_ir(const std::string& ptx_code, const std::string& function_name) {
-    return pimpl_->load_kernel_from_ir(ptx_code, function_name);
+ProcessingResult EventProcessor::load_kernel_from_ir(const std::string& ir_code, const std::string& function_name) {
+    return pimpl_->load_kernel_from_ir(ir_code, function_name);
 }
 
 ProcessingResult EventProcessor::load_kernel_from_file(const std::string& file_path, const std::string& function_name) {
     return pimpl_->load_kernel_from_file(file_path, function_name);
 }
 
-ProcessingResult EventProcessor::load_kernel_from_source(const std::string& cuda_source, const std::string& function_name,
+ProcessingResult EventProcessor::load_kernel_from_source(const std::string& source_code, const std::string& function_name,
                                          const std::vector<std::string>& include_paths,
                                          const std::vector<std::string>& compile_options) {
-    return pimpl_->load_kernel_from_source(cuda_source, function_name, include_paths, compile_options);
+    return pimpl_->load_kernel_from_source(source_code, function_name, include_paths, compile_options);
 }
 
 ProcessingResult EventProcessor::process_event(void* event_data, size_t event_size) {
