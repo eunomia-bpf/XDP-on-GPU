@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <iostream>
 
 using namespace ebpf_gpu;
 
@@ -65,6 +66,7 @@ std::string get_test_kernel_name_cpu() {
 }
 
 TEST_CASE("Performance - CPU vs GPU Comparison", "[performance][comparison][benchmark]") {
+    // Check if GPU is available
     auto devices = get_available_devices();
     if (devices.empty()) {
         SKIP("No GPU devices available for performance testing");
@@ -124,8 +126,26 @@ TEST_CASE("Performance - CPU vs GPU Comparison", "[performance][comparison][benc
         reset_event_actions_cpu(gpu_events);
         reset_event_actions_cpu(cpu_events);
         
+        // Debug: Print first few events before processing
+        std::cout << "Before processing:" << std::endl;
+        for (size_t i = 0; i < std::min(size_t(5), event_count); i++) {
+            std::cout << "GPU Event " << i << ": src_ip=" << std::hex << gpu_events[i].src_ip << ", protocol=" 
+                      << std::dec << (int)gpu_events[i].protocol << ", action=" << (int)gpu_events[i].action << std::endl;
+            std::cout << "CPU Event " << i << ": src_ip=" << std::hex << cpu_events[i].src_ip << ", protocol=" 
+                      << std::dec << (int)cpu_events[i].protocol << ", action=" << (int)cpu_events[i].action << std::endl;
+        }
+        
         processor.process_events(gpu_events.data(), buffer_size, gpu_events.size());
         selected_cpu_function(cpu_events.data(), cpu_events.size());
+        
+        // Debug: Print first few events after processing
+        std::cout << "After processing:" << std::endl;
+        for (size_t i = 0; i < std::min(size_t(5), event_count); i++) {
+            std::cout << "GPU Event " << i << ": src_ip=" << std::hex << gpu_events[i].src_ip << ", protocol=" 
+                      << std::dec << (int)gpu_events[i].protocol << ", action=" << (int)gpu_events[i].action << std::endl;
+            std::cout << "CPU Event " << i << ": src_ip=" << std::hex << cpu_events[i].src_ip << ", protocol=" 
+                      << std::dec << (int)cpu_events[i].protocol << ", action=" << (int)cpu_events[i].action << std::endl;
+        }
         
         // Compare results
         bool results_match = true;

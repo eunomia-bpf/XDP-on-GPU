@@ -6,6 +6,8 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <type_traits>
+#include <iostream>
 
 // Put NetworkEvent in the ebpf_gpu namespace to match the expected kernel signature
 namespace ebpf_gpu {
@@ -22,6 +24,10 @@ struct NetworkEvent {
     uint8_t protocol = 0;
     uint8_t action = 0;  // 0=drop, 1=pass, 2=redirect
 };
+
+// Static assert to verify the size of NetworkEvent
+static_assert(sizeof(NetworkEvent) == 34 || sizeof(NetworkEvent) == 40, 
+    "NetworkEvent size is unexpected - check memory layout for padding");
 
 // Backend detection
 enum class TestBackend {
