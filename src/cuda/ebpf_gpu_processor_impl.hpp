@@ -44,7 +44,7 @@ private:
     CUcontext context_;
     void* device_buffer_;
     size_t buffer_size_;
-    std::unique_ptr<CudaModule> module_;
+    std::unique_ptr<GpuModule> module_;
     CUfunction kernel_function_;
     GpuDeviceManager device_manager_;
     int device_id_;

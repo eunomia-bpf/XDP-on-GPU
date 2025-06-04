@@ -31,7 +31,7 @@ void GpuModule::initialize_from_ir(const std::string& ir_code) {
         throw std::runtime_error("Empty PTX code");
     }
 
-    CUresult result = cuModuleLoadData(&module_handle_, ir_code.c_str());
+    CUresult result = cuModuleLoadData(reinterpret_cast<CUmodule*>(&module_handle_), ir_code.c_str());
     if (result != CUDA_SUCCESS) {
         const char* error_str;
         cuGetErrorString(result, &error_str);
@@ -110,6 +110,10 @@ bool GpuModule::is_valid() const noexcept {
 
 // KernelLoader implementation for CUDA
 std::unique_ptr<GpuModule> KernelLoader::load_from_ir(const std::string& ir_code) const {
+    if (ir_code.empty()) {
+        throw std::runtime_error("Empty PTX code");
+    }
+    
     try {
         return std::make_unique<GpuModule>(ir_code);
     } catch (const std::exception& e) {

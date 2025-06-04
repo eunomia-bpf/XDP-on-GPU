@@ -101,18 +101,27 @@ TEST_CASE("Integration - Event Processing Workflow", "[integration]") {
             return;
         }
         
+        // Output first few bytes of the test code for debugging
+        INFO("Test code first 100 bytes: " << std::string(test_code).substr(0, 100));
+        
         // Create processor with default config
         EventProcessor processor;
         
         // Get correct kernel function name for the backend
         std::string kernel_name = get_backend_kernel_name();
+        INFO("Using kernel function name: " << kernel_name);
         
         // Load kernel
-        auto result = processor.load_kernel_from_source(test_code, kernel_name);
+        auto result = processor.load_kernel_from_ir(test_code, kernel_name);
+        INFO("Kernel load result: " << static_cast<int>(result));
+        
         if (result != ProcessingResult::Success) {
             SKIP("Failed to load kernel for integration testing");
             return;
         }
+        
+        // Check if processor is ready
+        INFO("Is processor ready: " << (processor.is_ready() ? "true" : "false"));
         
         // Create test data
         const size_t num_events = 100;
@@ -120,6 +129,7 @@ TEST_CASE("Integration - Event Processing Workflow", "[integration]") {
         
         // Process events
         result = processor.process_events(test_data.data(), test_data.size(), num_events);
+        INFO("Process events result: " << static_cast<int>(result));
         // Note: We're just testing that it doesn't crash, not checking the result
     }
 }
@@ -133,6 +143,9 @@ TEST_CASE("Integration - Error Handling", "[integration]") {
             return;
         }
         
+        // Output first few bytes of the test code for debugging
+        INFO("Test code first 100 bytes: " << std::string(test_code).substr(0, 100));
+        
         // Verify resource acquisition
         EventProcessor::Config config;
         config.device_id = 0;
@@ -142,7 +155,13 @@ TEST_CASE("Integration - Error Handling", "[integration]") {
             
             // Load kernel first to make processor ready
             std::string kernel_name = get_backend_kernel_name();
-            auto load_result = processor.load_kernel_from_source(test_code, kernel_name);
+            INFO("Using kernel function name: " << kernel_name);
+            
+            auto load_result = processor.load_kernel_from_ir(test_code, kernel_name);
+            INFO("Kernel load result: " << static_cast<int>(load_result));
+            
+            // Check if processor is ready
+            INFO("Is processor ready: " << (processor.is_ready() ? "true" : "false"));
             
             // Test extremely large allocation that should fail
             const size_t extremely_large_size = static_cast<size_t>(1) << 40; // 1TB
@@ -182,7 +201,7 @@ TEST_CASE("Integration - Resource Management", "[integration]") {
             EventProcessor processor;
             
             // Load kernel to make processor ready
-            auto load_result = processor.load_kernel_from_source(test_code, kernel_name);
+            auto load_result = processor.load_kernel_from_ir(test_code, kernel_name);
             REQUIRE(processor.is_ready());
             
             if (load_result == ProcessingResult::Success) {
@@ -195,7 +214,7 @@ TEST_CASE("Integration - Resource Management", "[integration]") {
         // Create processor and move it
         EventProcessor p1;
         // Load kernel to make processor ready
-        auto load_result = p1.load_kernel_from_source(test_code, kernel_name);
+        auto load_result = p1.load_kernel_from_ir(test_code, kernel_name);
         REQUIRE(p1.is_ready());
         
         EventProcessor p2(std::move(p1));

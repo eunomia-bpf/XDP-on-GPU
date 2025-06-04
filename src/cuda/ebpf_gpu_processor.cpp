@@ -99,12 +99,12 @@ ProcessingResult EventProcessor::Impl::load_kernel_from_ir(const std::string& pt
         }
         
         KernelLoader loader;
-        module_ = loader.load_from_ptx(ptx_code);
+        module_ = loader.load_from_ir(ptx_code);
         if (!module_ || !module_->is_valid()) {
             return ProcessingResult::KernelError;
         }
         
-        kernel_function_ = module_->get_function(function_name);
+        kernel_function_ = static_cast<CUfunction>(module_->get_function(function_name));
         return ProcessingResult::Success;
     } catch (const std::invalid_argument&) {
         return ProcessingResult::InvalidInput;
@@ -130,7 +130,7 @@ ProcessingResult EventProcessor::Impl::load_kernel_from_file(const std::string& 
             return ProcessingResult::KernelError;
         }
         
-        kernel_function_ = module_->get_function(function_name);
+        kernel_function_ = static_cast<CUfunction>(module_->get_function(function_name));
         return ProcessingResult::Success;
     } catch (const std::invalid_argument&) {
         return ProcessingResult::InvalidInput;
@@ -153,12 +153,12 @@ ProcessingResult EventProcessor::Impl::load_kernel_from_source(const std::string
         }
         
         KernelLoader loader;
-        module_ = loader.load_from_cuda_source(cuda_source, include_paths, compile_options);
+        module_ = loader.load_from_source(cuda_source, include_paths, compile_options);
         if (!module_ || !module_->is_valid()) {
             return ProcessingResult::KernelError;
         }
         
-        kernel_function_ = module_->get_function(function_name);
+        kernel_function_ = static_cast<CUfunction>(module_->get_function(function_name));
         return ProcessingResult::Success;
     } catch (const std::invalid_argument&) {
         return ProcessingResult::InvalidInput;
@@ -897,7 +897,7 @@ int select_best_device(size_t min_memory) {
 }
 
 bool validate_ptx_code(const std::string& ptx_code) {
-    return KernelLoader::validate_ptx(ptx_code);
+    return KernelLoader::validate_ir(ptx_code);
 }
 
 ProcessingResult EventProcessor::Impl::ensure_context_current() {
