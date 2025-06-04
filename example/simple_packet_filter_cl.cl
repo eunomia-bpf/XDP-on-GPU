@@ -1,59 +1,31 @@
 /**
- * Simple OpenCL packet filter for eBPF on GPU
- * This kernel implements a basic packet filter that can check for specific patterns in packet data.
+ * Simple packet filter for eBPF on GPU (OpenCL version)
+ * This kernel examines packet data and determines whether to accept or drop
  */
 
 /**
- * A simple packet filter function that checks if a packet contains a specific pattern.
- * 
- * @param packet_data The raw packet data buffer
- * @param packet_length The length of the packet in bytes
- * @param result Output parameter - set to 1 to accept packet, 0 to drop
+ * packet_filter - Main kernel function to filter packets
+ * @param packet: Pointer to packet data buffer
+ * @param result: Pointer to store the result (1 = accept, 0 = drop)
+ * @param length: Length of the packet data
  */
-__kernel void packet_filter(
-    __global const unsigned char* packet_data,
-    const unsigned int packet_length,
-    __global unsigned int* result
-) {
-    // Get the global thread ID
-    const uint id = get_global_id(0);
+__kernel void packet_filter(__global unsigned char* packet, 
+                           __global unsigned int* result,
+                           const unsigned int length) {
+    // Get global ID (corresponding to packet index in batch processing)
+    uint gid = get_global_id(0);
     
-    // Initialize result to 0 (drop)
-    result[id] = 0;
+    // Initialize result to DROP (0)
+    result[gid] = 0;
     
-    // Basic validation - ensure packet has a minimum size
-    if (packet_length < 14) {
-        return; // Drop undersized packets
+    // Basic packet validation
+    if (length < 14) {
+        // Packet too small to contain Ethernet header
+        return;
     }
     
-    // Example: Check for IPv4 Ethernet frame
-    // 12-13 bytes: Ethernet type field (0x0800 for IPv4)
-    if (packet_length >= 14 && 
-        packet_data[12] == 0x08 && 
-        packet_data[13] == 0x00) {
-        
-        // This is an IPv4 packet
-        
-        // IPv4 header starts at offset 14
-        const uint ip_offset = 14;
-        
-        // Check if we have enough data for an IPv4 header (20 bytes minimum)
-        if (packet_length >= ip_offset + 20) {
-            
-            // Get IP protocol field (offset 9 in IP header)
-            const unsigned char protocol = packet_data[ip_offset + 9];
-            
-            // Example: Accept TCP (6) or UDP (17) packets
-            if (protocol == 6 || protocol == 17) {
-                result[id] = 1; // Accept packet
-            }
-        }
-    }
-    
-    // Example: Also accept ARP packets (0x0806)
-    if (packet_length >= 14 &&
-        packet_data[12] == 0x08 && 
-        packet_data[13] == 0x06) {
-        result[id] = 1; // Accept ARP packets
+    // Simple filter logic: Accept packets with first byte even, drop if odd
+    if ((packet[0] & 1) == 0) {
+        result[gid] = 1;  // ACCEPT
     }
 } 

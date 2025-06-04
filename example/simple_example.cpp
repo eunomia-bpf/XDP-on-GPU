@@ -19,6 +19,25 @@
 #include <CL/cl.h>
 #endif
 
+// Print the content of a file
+void print_file_content(const std::string& file_path) {
+    std::ifstream file(file_path);
+    if (!file.is_open()) {
+        std::cerr << "Unable to open file: " << file_path << std::endl;
+        return;
+    }
+    
+    std::cout << "Contents of " << file_path << ":" << std::endl;
+    std::cout << "----------------------------------------" << std::endl;
+    std::string line;
+    int line_number = 1;
+    while (std::getline(file, line)) {
+        std::cout << std::setw(3) << line_number++ << ": " << line << std::endl;
+    }
+    std::cout << "----------------------------------------" << std::endl;
+    file.close();
+}
+
 // Structure representing a simple packet
 struct SimplePacket {
     uint8_t data[1500];  // Fixed size array for packet data
@@ -96,12 +115,12 @@ std::string backend_type_to_string(ebpf_gpu::BackendType type) {
 std::string get_default_kernel_file(ebpf_gpu::BackendType type) {
     switch (type) {
         case ebpf_gpu::BackendType::CUDA:
-            return "example/simple_packet_filter.cu";
+            return "examples/simple_packet_filter.cu";
         case ebpf_gpu::BackendType::OpenCL:
-            return "example/simple_packet_filter_cl.cl";
+            return "examples/simple_packet_filter_cl.cl";
         default:
             // Default to CUDA
-            return "example/simple_packet_filter.cu";
+            return "examples/simple_packet_filter.cu";
     }
 }
 
@@ -148,6 +167,10 @@ int main(int argc, char* argv[]) {
         std::cout << "Sample input packet:\n";
         print_packet(packets[0]);
         std::cout << "\n";
+        
+        // Print the kernel file content to help debug
+        std::cout << "Loading kernel file: " << kernel_file << std::endl;
+        print_file_content(kernel_file);
         
         // Initialize the eBPF GPU processor
         ebpf_gpu::EventProcessor processor;

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <fstream>
 #include <iterator>
+#include <iostream>
 
 namespace ebpf_gpu {
 
@@ -161,6 +162,7 @@ ProcessingResult EventProcessor::Impl::load_kernel_from_ir(const std::string& ir
         
         program_ = clCreateProgramWithSource(context_, 1, &source_ptr, &source_size, &err);
         if (err != CL_SUCCESS) {
+            std::cerr << "Failed to create program: error " << err << std::endl;
             return ProcessingResult::KernelError;
         }
         
@@ -173,6 +175,9 @@ ProcessingResult EventProcessor::Impl::load_kernel_from_ir(const std::string& ir
             std::vector<char> log(log_size);
             clGetProgramBuildInfo(program_, device_, CL_PROGRAM_BUILD_LOG, log_size, log.data(), nullptr);
             
+            std::cerr << "Failed to build program: error " << err << std::endl;
+            std::cerr << "Build log: " << log.data() << std::endl;
+            
             clReleaseProgram(program_);
             program_ = nullptr;
             return ProcessingResult::KernelError;
@@ -181,13 +186,51 @@ ProcessingResult EventProcessor::Impl::load_kernel_from_ir(const std::string& ir
         // Create kernel
         kernel_ = clCreateKernel(program_, function_name.c_str(), &err);
         if (err != CL_SUCCESS) {
+            std::cerr << "Failed to create kernel '" << function_name << "': error " << err << std::endl;
+            
+            // Check if the kernel function actually exists in the program
+            cl_uint num_kernels = 0;
+            clGetProgramInfo(program_, CL_PROGRAM_NUM_KERNELS, sizeof(cl_uint), &num_kernels, NULL);
+            
+            if (num_kernels > 0) {
+                size_t size = 0;
+                clGetProgramInfo(program_, CL_PROGRAM_KERNEL_NAMES, 0, NULL, &size);
+                
+                std::vector<char> kernel_names(size);
+                clGetProgramInfo(program_, CL_PROGRAM_KERNEL_NAMES, size, kernel_names.data(), NULL);
+                
+                std::cerr << "Available kernels: " << kernel_names.data() << std::endl;
+                std::cerr << "Make sure kernel function name matches exactly" << std::endl;
+            }
+            
             clReleaseProgram(program_);
             program_ = nullptr;
             return ProcessingResult::KernelError;
         }
         
+        // Verify all necessary components are initialized
+        if (!context_ || !device_buffer_ || !kernel_) {
+            std::cerr << "OpenCL resources not fully initialized: "
+                      << "context=" << (context_ ? "yes" : "no") << ", "
+                      << "device_buffer=" << (device_buffer_ ? "yes" : "no") << ", "
+                      << "kernel=" << (kernel_ ? "yes" : "no") << std::endl;
+                      
+            if (kernel_) {
+                clReleaseKernel(kernel_);
+                kernel_ = nullptr;
+            }
+            
+            if (program_) {
+                clReleaseProgram(program_);
+                program_ = nullptr;
+            }
+            
+            return ProcessingResult::KernelError;
+        }
+        
         return ProcessingResult::Success;
-    } catch (const std::exception&) {
+    } catch (const std::exception& e) {
+        std::cerr << "Exception in load_kernel_from_ir: " << e.what() << std::endl;
         return ProcessingResult::Error;
     }
 }
