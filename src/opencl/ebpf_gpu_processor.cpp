@@ -2,8 +2,6 @@
 #include <stdexcept>
 #include <cstring>
 #include <algorithm>
-#include <functional>
-#include <thread>
 #include <fstream>
 #include <iterator>
 
@@ -11,34 +9,20 @@ namespace ebpf_gpu {
 
 EventProcessor::Impl::Impl(const Config& config) 
     : config_(config), platform_(nullptr), device_(nullptr), context_(nullptr), command_queue_(nullptr),
-      device_buffer_(nullptr), buffer_size_(0), program_(nullptr), kernel_(nullptr), 
-      device_id_(-1), current_queue_idx_(0) {
+      device_buffer_(nullptr), buffer_size_(0), program_(nullptr), kernel_(nullptr), device_id_(-1) {
     initialize_device();
 }
 
 EventProcessor::Impl::~Impl() {
-    // Clean up OpenCL resources
     cleanup_opencl_resources();
 }
 
 void EventProcessor::Impl::cleanup_opencl_resources() {
-    // Clean up multiple device buffers
-    for (cl_mem buffer : device_buffers_) {
-        if (buffer) {
-            clReleaseMemObject(buffer);
-        }
-    }
-    device_buffers_.clear();
-    buffer_sizes_.clear();
-    
-    // Clean up original device buffer
+    // Clean up device buffer
     if (device_buffer_) {
         clReleaseMemObject(device_buffer_);
         device_buffer_ = nullptr;
     }
-    
-    // Clean up command queues
-    cleanup_command_queues();
     
     // Clean up kernel
     if (kernel_) {
@@ -50,6 +34,12 @@ void EventProcessor::Impl::cleanup_opencl_resources() {
     if (program_) {
         clReleaseProgram(program_);
         program_ = nullptr;
+    }
+    
+    // Clean up command queue
+    if (command_queue_) {
+        clReleaseCommandQueue(command_queue_);
+        command_queue_ = nullptr;
     }
     
     // Clean up context
@@ -71,10 +61,6 @@ void EventProcessor::Impl::initialize_device() {
     // Validate kernel launch configuration
     if (config_.block_size <= 0 || config_.block_size > 1024) {
         throw std::runtime_error("Invalid block size: must be between 1 and 1024");
-    }
-    
-    if (config_.max_grid_size < 0) {
-        throw std::runtime_error("Invalid max grid size: must be non-negative");
     }
     
     // Check if any devices are available first
@@ -121,8 +107,12 @@ void EventProcessor::Impl::initialize_device() {
     }
     
     // Use the device_id_ to select from available devices
-    // For simplicity in this implementation, just use the first device
-    device_ = devices[0];
+    if (device_id_ < static_cast<int>(device_count)) {
+        device_ = devices[device_id_];
+    } else {
+        // Fallback to first device
+        device_ = devices[0];
+    }
     
     // Create OpenCL context
     context_ = clCreateContext(nullptr, 1, &device_, nullptr, nullptr, &err);
@@ -137,7 +127,7 @@ void EventProcessor::Impl::initialize_device() {
         throw std::runtime_error("Failed to create OpenCL command queue");
     }
     
-    // Allocate device buffer
+    // Allocate device buffer with initial size
     device_buffer_ = clCreateBuffer(context_, CL_MEM_READ_WRITE, config_.buffer_size, nullptr, &err);
     if (err != CL_SUCCESS) {
         clReleaseCommandQueue(command_queue_);
@@ -145,17 +135,11 @@ void EventProcessor::Impl::initialize_device() {
         throw std::runtime_error("Failed to allocate device memory");
     }
     buffer_size_ = config_.buffer_size;
-    
-    // Initialize command queues
-    initialize_command_queues();
 }
 
 ProcessingResult EventProcessor::Impl::load_kernel_from_ir(const std::string& ir_code, const std::string& function_name) {
     try {
-        if (ir_code.empty()) {
-            return ProcessingResult::InvalidInput;
-        }
-        if (function_name.empty()) {
+        if (ir_code.empty() || function_name.empty()) {
             return ProcessingResult::InvalidInput;
         }
         
@@ -189,34 +173,28 @@ ProcessingResult EventProcessor::Impl::load_kernel_from_ir(const std::string& ir
             std::vector<char> log(log_size);
             clGetProgramBuildInfo(program_, device_, CL_PROGRAM_BUILD_LOG, log_size, log.data(), nullptr);
             
-            // Print or log the error
-            // std::cerr << "OpenCL program build failed: " << log.data() << std::endl;
-            
+            clReleaseProgram(program_);
+            program_ = nullptr;
             return ProcessingResult::KernelError;
         }
         
         // Create kernel
         kernel_ = clCreateKernel(program_, function_name.c_str(), &err);
         if (err != CL_SUCCESS) {
+            clReleaseProgram(program_);
+            program_ = nullptr;
             return ProcessingResult::KernelError;
         }
         
         return ProcessingResult::Success;
-    } catch (const std::invalid_argument&) {
-        return ProcessingResult::InvalidInput;
-    } catch (const std::runtime_error&) {
-        return ProcessingResult::KernelError;
-    } catch (...) {
+    } catch (const std::exception&) {
         return ProcessingResult::Error;
     }
 }
 
 ProcessingResult EventProcessor::Impl::load_kernel_from_file(const std::string& file_path, const std::string& function_name) {
     try {
-        if (file_path.empty()) {
-            return ProcessingResult::InvalidInput;
-        }
-        if (function_name.empty()) {
+        if (file_path.empty() || function_name.empty()) {
             return ProcessingResult::InvalidInput;
         }
         
@@ -231,11 +209,7 @@ ProcessingResult EventProcessor::Impl::load_kernel_from_file(const std::string& 
         
         // Use load_kernel_from_ir (which is actually OpenCL source code in this implementation)
         return load_kernel_from_ir(source_code, function_name);
-    } catch (const std::invalid_argument&) {
-        return ProcessingResult::InvalidInput;
-    } catch (const std::runtime_error&) {
-        return ProcessingResult::KernelError;
-    } catch (...) {
+    } catch (const std::exception&) {
         return ProcessingResult::Error;
     }
 }
@@ -243,24 +217,8 @@ ProcessingResult EventProcessor::Impl::load_kernel_from_file(const std::string& 
 ProcessingResult EventProcessor::Impl::load_kernel_from_source(const std::string& source_code, const std::string& function_name,
                                                 const std::vector<std::string>& include_paths,
                                                 const std::vector<std::string>& compile_options) {
-    try {
-        if (source_code.empty()) {
-            return ProcessingResult::InvalidInput;
-        }
-        if (function_name.empty()) {
-            return ProcessingResult::InvalidInput;
-        }
-        
-        // For OpenCL, we just pass through the source code directly
-        // We don't perform any source translation from CUDA to OpenCL in this simple implementation
-        return load_kernel_from_ir(source_code, function_name);
-    } catch (const std::invalid_argument&) {
-        return ProcessingResult::InvalidInput;
-    } catch (const std::runtime_error&) {
-        return ProcessingResult::KernelError;
-    } catch (...) {
-        return ProcessingResult::Error;
-    }
+    // For OpenCL, we just pass through the source code directly
+    return load_kernel_from_ir(source_code, function_name);
 }
 
 ProcessingResult EventProcessor::Impl::process_event(void* event_data, size_t event_size) {
@@ -272,20 +230,15 @@ ProcessingResult EventProcessor::Impl::process_event(void* event_data, size_t ev
         return ProcessingResult::InvalidInput;
     }
     
-    // The OpenCL kernel expects 3 parameters:
-    // 1. input_ptr (buffer)
-    // 2. output_ptr (buffer)
-    // 3. length (scalar)
-    
     cl_int err;
     
-    // Create buffers for input data
+    // Create input buffer
     cl_mem input_buffer = clCreateBuffer(context_, CL_MEM_READ_WRITE, event_size, nullptr, &err);
     if (err != CL_SUCCESS) {
         return ProcessingResult::MemoryError;
     }
     
-    // Create a result buffer
+    // Create output buffer
     cl_mem output_buffer = clCreateBuffer(context_, CL_MEM_WRITE_ONLY, sizeof(uint32_t), nullptr, &err);
     if (err != CL_SUCCESS) {
         clReleaseMemObject(input_buffer);
@@ -302,7 +255,6 @@ ProcessingResult EventProcessor::Impl::process_event(void* event_data, size_t ev
     }
     
     // Set kernel arguments
-    // Arg 0: input data buffer
     err = clSetKernelArg(kernel_, 0, sizeof(cl_mem), &input_buffer);
     if (err != CL_SUCCESS) {
         clReleaseMemObject(input_buffer);
@@ -310,7 +262,6 @@ ProcessingResult EventProcessor::Impl::process_event(void* event_data, size_t ev
         return ProcessingResult::KernelError;
     }
     
-    // Arg 1: output buffer
     err = clSetKernelArg(kernel_, 1, sizeof(cl_mem), &output_buffer);
     if (err != CL_SUCCESS) {
         clReleaseMemObject(input_buffer);
@@ -318,7 +269,6 @@ ProcessingResult EventProcessor::Impl::process_event(void* event_data, size_t ev
         return ProcessingResult::KernelError;
     }
     
-    // Arg 2: length
     uint32_t length = static_cast<uint32_t>(event_size);
     err = clSetKernelArg(kernel_, 2, sizeof(uint32_t), &length);
     if (err != CL_SUCCESS) {
@@ -327,7 +277,7 @@ ProcessingResult EventProcessor::Impl::process_event(void* event_data, size_t ev
         return ProcessingResult::KernelError;
     }
     
-    // Launch kernel for single event
+    // Launch kernel
     size_t global_work_size = config_.block_size;
     size_t local_work_size = config_.block_size;
     
@@ -339,10 +289,17 @@ ProcessingResult EventProcessor::Impl::process_event(void* event_data, size_t ev
         return ProcessingResult::KernelError;
     }
     
-    // Read back the result
-    uint32_t result_value = 0;
-    err = clEnqueueReadBuffer(command_queue_, output_buffer, CL_TRUE, 0, 
-                             sizeof(uint32_t), &result_value, 0, nullptr, nullptr);
+    // Wait for kernel to complete
+    err = clFinish(command_queue_);
+    if (err != CL_SUCCESS) {
+        clReleaseMemObject(input_buffer);
+        clReleaseMemObject(output_buffer);
+        return ProcessingResult::DeviceError;
+    }
+    
+    // Read back results to original event data
+    err = clEnqueueReadBuffer(command_queue_, input_buffer, CL_TRUE, 0,
+                             event_size, event_data, 0, nullptr, nullptr);
     if (err != CL_SUCCESS) {
         clReleaseMemObject(input_buffer);
         clReleaseMemObject(output_buffer);
@@ -352,12 +309,6 @@ ProcessingResult EventProcessor::Impl::process_event(void* event_data, size_t ev
     // Cleanup
     clReleaseMemObject(input_buffer);
     clReleaseMemObject(output_buffer);
-    
-    // Ensure all operations complete
-    err = clFinish(command_queue_);
-    if (err != CL_SUCCESS) {
-        return ProcessingResult::DeviceError;
-    }
     
     return ProcessingResult::Success;
 }
@@ -372,264 +323,53 @@ ProcessingResult EventProcessor::Impl::process_events(void* events_buffer, size_
         return ProcessingResult::InvalidInput;
     }
     
-    // Determine the optimal batch size for processing
-    // If max_batch_size is 0 or greater than event_count, use event_count as batch_size
-    size_t batch_size = (config_.max_batch_size > 0 && config_.max_batch_size < event_count) 
-                      ? config_.max_batch_size : event_count;
-    
-    // Calculate the number of batches
-    size_t num_batches = (event_count + batch_size - 1) / batch_size; // Ceiling division
-    
-    // For a single batch, optimize by avoiding overhead
-    if (num_batches == 1) {
-        return process_events_single_batch(events_buffer, buffer_size, event_count, is_async);
-    } else {
-        // Use multi-batch processing
-        return process_events_multi_batch(events_buffer, buffer_size, event_count, is_async);
-    }
-}
-
-ProcessingResult EventProcessor::Impl::process_events_single_batch(void* events_buffer, size_t buffer_size, 
-                                                                  size_t event_count, bool is_async) {
-    // Ensure the device buffer is large enough
-    ProcessingResult buffer_result = ensure_buffer_size(buffer_size);
-    if (buffer_result != ProcessingResult::Success) {
-        return ProcessingResult::DeviceError;
-    }
-    
-    // Get a command queue for this operation
-    cl_command_queue queue = get_available_command_queue();
-    cl_int err;
-    
-    // Transfer data to device
-    err = clEnqueueWriteBuffer(queue, device_buffer_, CL_TRUE, 0, buffer_size, events_buffer, 0, nullptr, nullptr);
-    if (err != CL_SUCCESS) {
-        return ProcessingResult::DeviceError;
-    }
-    
-    // Allocate a separate buffer for results
-    cl_mem result_buffer = clCreateBuffer(context_, CL_MEM_WRITE_ONLY, event_count * sizeof(uint32_t), nullptr, &err);
-    if (err != CL_SUCCESS) {
-        return ProcessingResult::MemoryError;
-    }
-    
-    // Initialize result buffer with zeros
-    std::vector<uint32_t> init_values(event_count, 0);
-    err = clEnqueueWriteBuffer(queue, result_buffer, CL_FALSE, 0, 
-                              event_count * sizeof(uint32_t), init_values.data(), 0, nullptr, nullptr);
-    if (err != CL_SUCCESS) {
-        clReleaseMemObject(result_buffer);
-        return ProcessingResult::DeviceError;
-    }
-    
-    // Set kernel argument 0: packet data buffer (input)
-    err = clSetKernelArg(kernel_, 0, sizeof(cl_mem), &device_buffer_);
-    if (err != CL_SUCCESS) {
-        clReleaseMemObject(result_buffer);
-        return ProcessingResult::KernelError;
-    }
-    
-    // Set kernel argument 1: result buffer (output)
-    err = clSetKernelArg(kernel_, 1, sizeof(cl_mem), &result_buffer);
-    if (err != CL_SUCCESS) {
-        clReleaseMemObject(result_buffer);
-        return ProcessingResult::KernelError;
-    }
-    
-    // Set kernel argument 2: length
-    uint32_t packet_length = event_count;
-    err = clSetKernelArg(kernel_, 2, sizeof(uint32_t), &packet_length);
-    if (err != CL_SUCCESS) {
-        clReleaseMemObject(result_buffer);
-        return ProcessingResult::KernelError;
-    }
-    
-    // Calculate work dimensions
-    size_t global_work_size = ((event_count + config_.block_size - 1) / config_.block_size) * config_.block_size;
-    size_t local_work_size = config_.block_size;
-    
-    // Apply max grid size limit if configured
-    if (config_.max_grid_size > 0 && global_work_size > config_.max_grid_size * local_work_size) {
-        global_work_size = config_.max_grid_size * local_work_size;
-    }
-    
-    // Launch kernel
-    err = clEnqueueNDRangeKernel(queue, kernel_, 1, nullptr, &global_work_size, 
-                                &local_work_size, 0, nullptr, nullptr);
-    if (err != CL_SUCCESS) {
-        clReleaseMemObject(result_buffer);
-        return ProcessingResult::KernelError;
-    }
-    
-    // If not async, read back results
-    if (!is_async) {
-        // Read back the results
-        std::vector<uint32_t> results(event_count);
-        err = clEnqueueReadBuffer(queue, result_buffer, CL_TRUE, 0, 
-                                event_count * sizeof(uint32_t), results.data(), 0, nullptr, nullptr);
-        if (err != CL_SUCCESS) {
-            clReleaseMemObject(result_buffer);
-            return ProcessingResult::DeviceError;
+    // Ensure buffer is large enough
+    if (buffer_size_ < buffer_size) {
+        // Release old buffer
+        if (device_buffer_) {
+            clReleaseMemObject(device_buffer_);
         }
-    }
-    
-    // Release the result buffer
-    clReleaseMemObject(result_buffer);
-    
-    return ProcessingResult::Success;
-}
-
-ProcessingResult EventProcessor::Impl::process_events_multi_batch(void* events_buffer, size_t buffer_size, 
-                                                               size_t event_count, bool is_async) {
-    // Calculate batch parameters
-    size_t batch_size = (config_.max_batch_size > 0 && config_.max_batch_size < event_count) 
-                      ? config_.max_batch_size : event_count;
-    size_t num_batches = (event_count + batch_size - 1) / batch_size;
-    size_t event_size = buffer_size / event_count;
-    
-    // Initialize command queues if not already done
-    if (command_queues_.empty()) {
-        initialize_command_queues();
-    }
-    
-    size_t num_queues = command_queues_.size();
-    if (num_queues == 0) {
-        return ProcessingResult::DeviceError;
-    }
-    
-    // Process batches
-    for (size_t batch = 0; batch < num_batches; batch++) {
-        size_t offset = batch * batch_size;
-        size_t current_batch_events = std::min(batch_size, event_count - offset);
-        size_t current_batch_bytes = current_batch_events * event_size;
-        void* batch_buffer = static_cast<char*>(events_buffer) + (offset * event_size);
         
-        // Get command queue for this batch using round-robin
-        size_t queue_idx = batch % num_queues;
-        cl_command_queue current_queue = command_queues_[queue_idx];
-        
+        // Create new buffer
         cl_int err;
-        
-        // Create input buffer for this batch
-        cl_mem input_buffer = clCreateBuffer(context_, CL_MEM_READ_WRITE, current_batch_bytes, nullptr, &err);
+        device_buffer_ = clCreateBuffer(context_, CL_MEM_READ_WRITE, buffer_size, nullptr, &err);
         if (err != CL_SUCCESS) {
+            device_buffer_ = nullptr;
+            buffer_size_ = 0;
             return ProcessingResult::MemoryError;
         }
-        
-        // Create output buffer for results
-        cl_mem output_buffer = clCreateBuffer(context_, CL_MEM_WRITE_ONLY, current_batch_events * sizeof(uint32_t), nullptr, &err);
-        if (err != CL_SUCCESS) {
-            clReleaseMemObject(input_buffer);
-            return ProcessingResult::MemoryError;
-        }
-        
-        // Initialize output buffer with zeros
-        std::vector<uint32_t> init_values(current_batch_events, 0);
-        err = clEnqueueWriteBuffer(current_queue, output_buffer, CL_FALSE, 0, 
-                                  current_batch_events * sizeof(uint32_t), init_values.data(), 0, nullptr, nullptr);
-        if (err != CL_SUCCESS) {
-            clReleaseMemObject(input_buffer);
-            clReleaseMemObject(output_buffer);
-            return ProcessingResult::DeviceError;
-        }
-        
-        // Copy batch data to input buffer
-        err = clEnqueueWriteBuffer(current_queue, input_buffer, CL_FALSE, 0, 
-                                  current_batch_bytes, batch_buffer, 0, nullptr, nullptr);
-        if (err != CL_SUCCESS) {
-            clReleaseMemObject(input_buffer);
-            clReleaseMemObject(output_buffer);
-            return ProcessingResult::DeviceError;
-        }
-        
-        // Set kernel arguments
-        // Arg 0: input buffer
-        err = clSetKernelArg(kernel_, 0, sizeof(cl_mem), &input_buffer);
-        if (err != CL_SUCCESS) {
-            clReleaseMemObject(input_buffer);
-            clReleaseMemObject(output_buffer);
-            return ProcessingResult::KernelError;
-        }
-        
-        // Arg 1: output buffer
-        err = clSetKernelArg(kernel_, 1, sizeof(cl_mem), &output_buffer);
-        if (err != CL_SUCCESS) {
-            clReleaseMemObject(input_buffer);
-            clReleaseMemObject(output_buffer);
-            return ProcessingResult::KernelError;
-        }
-        
-        // Arg 2: length - use the current batch size, not buffer size
-        uint32_t length = current_batch_events;
-        err = clSetKernelArg(kernel_, 2, sizeof(uint32_t), &length);
-        if (err != CL_SUCCESS) {
-            clReleaseMemObject(input_buffer);
-            clReleaseMemObject(output_buffer);
-            return ProcessingResult::KernelError;
-        }
-        
-        // Calculate work dimensions for this batch
-        size_t global_work_size = ((current_batch_events + config_.block_size - 1) / config_.block_size) * config_.block_size;
-        size_t local_work_size = config_.block_size;
-        
-        // Launch kernel
-        err = clEnqueueNDRangeKernel(current_queue, kernel_, 1, nullptr, 
-                                    &global_work_size, &local_work_size, 0, nullptr, nullptr);
-        if (err != CL_SUCCESS) {
-            clReleaseMemObject(input_buffer);
-            clReleaseMemObject(output_buffer);
-            return ProcessingResult::KernelError;
-        }
-        
-        // Clean up resources
-        clReleaseMemObject(input_buffer);
-        clReleaseMemObject(output_buffer);
-    }
-    
-    // Final synchronization based on async flag
-    if (!is_async) {
-        // Wait for all command queues to complete
-        for (auto& queue : command_queues_) {
-            cl_int finish_err = clFinish(queue);
-            if (finish_err != CL_SUCCESS) {
-                return ProcessingResult::DeviceError;
-            }
-        }
-    }
-    
-    return ProcessingResult::Success;
-}
-
-ProcessingResult EventProcessor::Impl::launch_kernel(cl_mem device_data, size_t event_count) {
-    if (!kernel_) {
-        return ProcessingResult::KernelError;
+        buffer_size_ = buffer_size;
     }
     
     cl_int err;
     
-    // Create a result buffer
+    // Copy data to device
+    err = clEnqueueWriteBuffer(command_queue_, device_buffer_, CL_TRUE, 0, 
+                              buffer_size, events_buffer, 0, nullptr, nullptr);
+    if (err != CL_SUCCESS) {
+        return ProcessingResult::DeviceError;
+    }
+    
+    // Create output buffer
     cl_mem result_buffer = clCreateBuffer(context_, CL_MEM_WRITE_ONLY, event_count * sizeof(uint32_t), nullptr, &err);
     if (err != CL_SUCCESS) {
         return ProcessingResult::MemoryError;
     }
     
     // Set kernel arguments
-    // Arg 0: input data buffer
-    err = clSetKernelArg(kernel_, 0, sizeof(cl_mem), &device_data);
+    err = clSetKernelArg(kernel_, 0, sizeof(cl_mem), &device_buffer_);
     if (err != CL_SUCCESS) {
         clReleaseMemObject(result_buffer);
         return ProcessingResult::KernelError;
     }
     
-    // Arg 1: output buffer
     err = clSetKernelArg(kernel_, 1, sizeof(cl_mem), &result_buffer);
     if (err != CL_SUCCESS) {
         clReleaseMemObject(result_buffer);
         return ProcessingResult::KernelError;
     }
     
-    // Arg 2: length
-    uint32_t length = event_count;
+    uint32_t length = static_cast<uint32_t>(event_count);
     err = clSetKernelArg(kernel_, 2, sizeof(uint32_t), &length);
     if (err != CL_SUCCESS) {
         clReleaseMemObject(result_buffer);
@@ -640,20 +380,30 @@ ProcessingResult EventProcessor::Impl::launch_kernel(cl_mem device_data, size_t 
     size_t global_work_size = ((event_count + config_.block_size - 1) / config_.block_size) * config_.block_size;
     size_t local_work_size = config_.block_size;
     
-    // Apply max grid size limit if configured
-    if (config_.max_grid_size > 0 && global_work_size > config_.max_grid_size * local_work_size) {
-        global_work_size = config_.max_grid_size * local_work_size;
-    }
-    
     // Launch kernel
-    err = clEnqueueNDRangeKernel(command_queue_, kernel_, 1, nullptr, &global_work_size, 
-                                &local_work_size, 0, nullptr, nullptr);
+    err = clEnqueueNDRangeKernel(command_queue_, kernel_, 1, nullptr, 
+                                &global_work_size, &local_work_size, 0, nullptr, nullptr);
     if (err != CL_SUCCESS) {
         clReleaseMemObject(result_buffer);
         return ProcessingResult::KernelError;
     }
     
-    // Clean up
+    // Wait for kernel completion
+    err = clFinish(command_queue_);
+    if (err != CL_SUCCESS) {
+        clReleaseMemObject(result_buffer);
+        return ProcessingResult::DeviceError;
+    }
+    
+    // Read back results to original buffer
+    err = clEnqueueReadBuffer(command_queue_, device_buffer_, CL_TRUE, 0,
+                             buffer_size, events_buffer, 0, nullptr, nullptr);
+    if (err != CL_SUCCESS) {
+        clReleaseMemObject(result_buffer);
+        return ProcessingResult::DeviceError;
+    }
+    
+    // Cleanup
     clReleaseMemObject(result_buffer);
     
     return ProcessingResult::Success;
@@ -679,194 +429,15 @@ bool EventProcessor::Impl::is_ready() const {
     return context_ && device_buffer_ && kernel_;
 }
 
-ProcessingResult EventProcessor::Impl::ensure_buffer_size(size_t required_size) {
-    if (!device_buffer_ || buffer_size_ < required_size) {
-        if (device_buffer_) {
-            clReleaseMemObject(device_buffer_);
-            device_buffer_ = nullptr;
-        }
-        
-        size_t new_size = std::max(required_size, config_.buffer_size);
-        cl_int err;
-        
-        // Allocate a new buffer
-        device_buffer_ = clCreateBuffer(context_, CL_MEM_READ_WRITE, new_size, nullptr, &err);
-        if (err != CL_SUCCESS) {
-            device_buffer_ = nullptr;
-            buffer_size_ = 0;
-            return ProcessingResult::MemoryError;
-        }
-        buffer_size_ = new_size;
-    }
-    return ProcessingResult::Success;
-}
-
-void EventProcessor::Impl::initialize_command_queues() {
-    // Cleanup existing command queues first
-    cleanup_command_queues();
-    
-    // Determine the number of command queues to create from config
-    int num_queues = config_.max_stream_count;
-    if (num_queues <= 0) {
-        // Default to 2 queues if not specified
-        num_queues = 2;
-    }
-    
-    // Ensure we don't create too many queues
-    if (num_queues > 16) {
-        num_queues = 16;
-    }
-    
-    // Create the command queues
-    command_queues_.reserve(num_queues);
-    device_buffers_.clear();
-    buffer_sizes_.clear();
-    
-    for (int i = 0; i < num_queues; i++) {
-        cl_int err;
-        cl_command_queue queue = clCreateCommandQueue(context_, device_, 0, &err);
-        if (err != CL_SUCCESS) {
-            // If we can't create a queue, just break
-            break;
-        }
-        
-        command_queues_.push_back(queue);
-    }
-    
-    // Ensure we have at least one command queue
-    if (command_queues_.empty()) {
-        // Create at least one command queue if none were created
-        cl_int err;
-        cl_command_queue queue = clCreateCommandQueue(context_, device_, 0, &err);
-        if (err == CL_SUCCESS) {
-            command_queues_.push_back(queue);
-        } else {
-            throw std::runtime_error("Failed to create any OpenCL command queues");
-        }
-    }
-    
-    // Reset current queue index
-    current_queue_idx_ = 0;
-    
-    // Initialize device buffers for each command queue
-    ensure_command_queue_buffers(config_.buffer_size);
-}
-
-void EventProcessor::Impl::cleanup_command_queues() {
-    // Release all command queues
-    for (auto& queue : command_queues_) {
-        clFinish(queue);
-        clReleaseCommandQueue(queue);
-    }
-    
-    // Clear the vector
-    command_queues_.clear();
-    
-    // Clean up device buffers associated with command queues
-    for (cl_mem buffer : device_buffers_) {
-        if (buffer) {
-            clReleaseMemObject(buffer);
-        }
-    }
-    device_buffers_.clear();
-    buffer_sizes_.clear();
-}
-
-cl_command_queue EventProcessor::Impl::get_available_command_queue() {
-    // Initialize command queues if they haven't been created yet
-    if (command_queues_.empty()) {
-        initialize_command_queues();
-    }
-    
-    // Get the next command queue in a round-robin fashion
-    cl_command_queue queue = command_queues_[current_queue_idx_];
-    
-    // Update the index for the next call
-    current_queue_idx_ = (current_queue_idx_ + 1) % command_queues_.size();
-    
-    return queue;
-}
-
-ProcessingResult EventProcessor::Impl::ensure_command_queue_buffers(size_t required_buffer_size) {
-    size_t num_queues = command_queues_.size();
-    if (num_queues == 0) {
-        return ProcessingResult::DeviceError;
-    }
-    
-    // Check if we need to allocate or reallocate buffers
-    if (device_buffers_.size() != num_queues) {
-        // Clean up old buffers
-        for (cl_mem buffer : device_buffers_) {
-            if (buffer) {
-                clReleaseMemObject(buffer);
-            }
-        }
-        device_buffers_.clear();
-        buffer_sizes_.clear();
-        
-        // Allocate new buffers for each command queue
-        device_buffers_.resize(num_queues);
-        buffer_sizes_.resize(num_queues);
-        
-        for (size_t i = 0; i < num_queues; i++) {
-            cl_int err;
-            device_buffers_[i] = clCreateBuffer(context_, CL_MEM_READ_WRITE, required_buffer_size, nullptr, &err);
-            
-            if (err != CL_SUCCESS) {
-                // Clean up partially allocated buffers
-                for (size_t j = 0; j < i; j++) {
-                    clReleaseMemObject(device_buffers_[j]);
-                }
-                device_buffers_.clear();
-                buffer_sizes_.clear();
-                return ProcessingResult::MemoryError;
-            }
-            buffer_sizes_[i] = required_buffer_size;
-        }
-    } else {
-        // Ensure existing buffers are large enough
-        for (size_t i = 0; i < num_queues; i++) {
-            if (buffer_sizes_[i] < required_buffer_size) {
-                // Release old buffer
-                clReleaseMemObject(device_buffers_[i]);
-                
-                // Create new buffer
-                cl_int err;
-                device_buffers_[i] = clCreateBuffer(context_, CL_MEM_READ_WRITE, required_buffer_size, nullptr, &err);
-                
-                if (err != CL_SUCCESS) {
-                    return ProcessingResult::MemoryError;
-                }
-                buffer_sizes_[i] = required_buffer_size;
-            }
-        }
-    }
-    
-    return ProcessingResult::Success;
-}
-
 ProcessingResult EventProcessor::Impl::synchronize_async_operations() {
-    if (!is_ready()) {
-        return ProcessingResult::KernelError;
-    }
-    
-    // Synchronize all command queues
-    for (auto& queue : command_queues_) {
-        cl_int err = clFinish(queue);
+    // Just wait for the command queue to complete
+    if (command_queue_) {
+        cl_int err = clFinish(command_queue_);
         if (err != CL_SUCCESS) {
             return ProcessingResult::DeviceError;
         }
     }
-    
     return ProcessingResult::Success;
-}
-
-size_t EventProcessor::Impl::get_total_device_buffer_memory() const {
-    size_t total = buffer_size_;  // Original device buffer
-    for (size_t size : buffer_sizes_) {
-        total += size;  // Additional per-command queue buffers
-    }
-    return total;
 }
 
 // EventProcessor public interface implementation
@@ -898,7 +469,8 @@ ProcessingResult EventProcessor::process_event(void* event_data, size_t event_si
 
 ProcessingResult EventProcessor::process_events(void* events_buffer, size_t buffer_size, size_t event_count,
                                          bool is_async) {
-    return pimpl_->process_events(events_buffer, buffer_size, event_count, is_async);
+    // Ignore is_async parameter in simplified implementation
+    return pimpl_->process_events(events_buffer, buffer_size, event_count, false);
 }
 
 GpuDeviceInfo EventProcessor::get_device_info() const {

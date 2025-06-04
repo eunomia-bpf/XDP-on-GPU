@@ -96,12 +96,12 @@ std::string backend_type_to_string(ebpf_gpu::BackendType type) {
 std::string get_default_kernel_file(ebpf_gpu::BackendType type) {
     switch (type) {
         case ebpf_gpu::BackendType::CUDA:
-            return "../examples/simple_packet_filter.cu";
+            return "example/simple_packet_filter.cu";
         case ebpf_gpu::BackendType::OpenCL:
-            return "../examples/simple_packet_filter_cl.cl";
+            return "example/simple_packet_filter_cl.cl";
         default:
             // Default to CUDA
-            return "../examples/simple_packet_filter.cu";
+            return "example/simple_packet_filter.cu";
     }
 }
 

@@ -35,3 +35,5 @@ test_kernels.ptx
 /Testing
 example/dpdk_example
 example/build_simple
+
+examples/simple_packet_filter_cl.cl
