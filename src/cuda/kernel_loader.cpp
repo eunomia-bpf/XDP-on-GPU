@@ -4,6 +4,9 @@
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <cstdlib>
+#include <filesystem>
+#include <memory>
 
 namespace ebpf_gpu {
 
@@ -171,10 +174,113 @@ std::string KernelLoader::compile_source_to_ir(
     const std::string& source_code,
     const std::vector<std::string>& include_paths,
     const std::vector<std::string>& compile_options) {
-    // TODO: Implement NVRTC compilation from CUDA source to PTX
-    // For now, we'll assume the source is already PTX
-    std::cerr << "Warning: CUDA source to PTX compilation not implemented. Assuming input is already PTX." << std::endl;
-    return source_code;
+    
+    if (source_code.empty()) {
+        throw std::runtime_error("Empty source code provided");
+    }
+    
+    // Create temporary files
+    std::string temp_dir = "/tmp";
+    std::string temp_cu_file = temp_dir + "/temp_kernel_" + std::to_string(std::rand()) + ".cu";
+    std::string temp_ptx_file = temp_dir + "/temp_kernel_" + std::to_string(std::rand()) + ".ptx";
+    
+    try {
+        // Write source code to temporary .cu file
+        std::ofstream cu_file(temp_cu_file);
+        if (!cu_file.is_open()) {
+            throw std::runtime_error("Failed to create temporary source file: " + temp_cu_file);
+        }
+        cu_file << source_code;
+        cu_file.close();
+        
+        // Build nvcc command
+        std::stringstream cmd;
+        cmd << "nvcc --ptx";
+        
+        // Add include paths
+        for (const auto& include_path : include_paths) {
+            cmd << " -I\"" << include_path << "\"";
+        }
+        
+        // Add custom compile options
+        for (const auto& option : compile_options) {
+            cmd << " " << option;
+        }
+        
+        // Add default options for better compatibility
+        cmd << " --gpu-architecture=compute_50";
+        cmd << " --std=c++14";
+        
+        // Input and output files
+        cmd << " \"" << temp_cu_file << "\"";
+        cmd << " -o \"" << temp_ptx_file << "\"";
+        
+        // Redirect stderr to stdout for better error capture
+        cmd << " 2>&1";
+        
+        std::string command = cmd.str();
+        std::cout << "Executing: " << command << std::endl;
+        
+        // Execute nvcc command
+        std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(command.c_str(), "r"), pclose);
+        if (!pipe) {
+            throw std::runtime_error("Failed to execute nvcc command");
+        }
+        
+        // Capture command output
+        std::string output;
+        char buffer[256];
+        while (fgets(buffer, sizeof(buffer), pipe.get()) != nullptr) {
+            output += buffer;
+        }
+        
+        // Check if nvcc succeeded
+        int exit_code = pclose(pipe.release());
+        if (exit_code != 0) {
+            // Clean up temp files before throwing
+            std::remove(temp_cu_file.c_str());
+            std::remove(temp_ptx_file.c_str());
+            throw std::runtime_error("nvcc compilation failed with exit code " + std::to_string(exit_code) + ":\n" + output);
+        }
+        
+        // Print any warnings/info from nvcc
+        if (!output.empty()) {
+            std::cout << "nvcc output:\n" << output << std::endl;
+        }
+        
+        // Read the generated PTX file
+        std::ifstream ptx_file(temp_ptx_file, std::ios::binary | std::ios::ate);
+        if (!ptx_file.is_open()) {
+            // Clean up temp files before throwing
+            std::remove(temp_cu_file.c_str());
+            std::remove(temp_ptx_file.c_str());
+            throw std::runtime_error("Failed to open generated PTX file: " + temp_ptx_file);
+        }
+        
+        std::streamsize ptx_size = ptx_file.tellg();
+        ptx_file.seekg(0, std::ios::beg);
+        
+        std::string ptx_code(ptx_size, '\0');
+        if (!ptx_file.read(&ptx_code[0], ptx_size)) {
+            ptx_file.close();
+            std::remove(temp_cu_file.c_str());
+            std::remove(temp_ptx_file.c_str());
+            throw std::runtime_error("Failed to read PTX file");
+        }
+        ptx_file.close();
+        
+        // Clean up temporary files
+        std::remove(temp_cu_file.c_str());
+        std::remove(temp_ptx_file.c_str());
+        
+        return ptx_code;
+        
+    } catch (const std::exception& e) {
+        // Clean up temporary files in case of any error
+        std::remove(temp_cu_file.c_str());
+        std::remove(temp_ptx_file.c_str());
+        throw;
+    }
 }
 
 bool KernelLoader::validate_ir(const std::string& ir_code) {
