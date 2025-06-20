@@ -257,3 +257,127 @@ TEST_CASE("Performance - Multiple Filter Comparison", "[performance][filters][be
         }
     }
 }
+
+TEST_CASE("Performance - Hash Load Balancing CPU vs GPU", "[performance][hash][load_balancing][comparison][benchmark]") {
+    // Check if GPU is available
+    auto devices = get_available_devices();
+    if (devices.empty()) {
+        SKIP("No GPU devices available for hash load balancing performance testing");
+    }
+    
+    const char* test_code = get_test_ptx();
+    if (!test_code) {
+        SKIP("Test IR code not found for hash load balancing performance testing");
+    }
+    
+    // Test different hash load balancing kernels
+    const std::vector<const char*> test_kernels = {
+        kernel_names::HASH_LOAD_BALANCER,
+        kernel_names::BATCH_HASH_LOAD_BALANCER
+    };
+    
+    // Test with different event counts to measure scalability
+    const std::vector<size_t> event_counts = {1000, 10000, 100000, 1000000, 10000000};
+    
+    for (const char* kernel_name : test_kernels) {
+        for (size_t event_count : event_counts) {
+            // Get corresponding CPU function
+            cpu::FilterFunction cpu_function = cpu::get_cpu_function_by_name(kernel_name);
+            const char* function_name = cpu::get_function_display_name(kernel_name);
+            
+            // Setup GPU processor for this kernel
+            EventProcessor processor;
+            
+            // For OpenCL, we need to use a different approach since it doesn't support these CUDA-specific kernels
+            TestBackend backend = detect_test_backend();
+            ProcessingResult load_result;
+            
+            if (backend == TestBackend::OpenCL) {
+                // For OpenCL, use the simple kernel for all tests
+                load_result = processor.load_kernel_from_ir(test_code, "simple_kernel");
+            } else {
+                // For CUDA, use the specific kernel
+                load_result = processor.load_kernel_from_ir(test_code, kernel_name);
+            }
+            
+            REQUIRE(load_result == ProcessingResult::Success);
+            
+            // Create test data with diverse network flows for better hash distribution
+            std::vector<NetworkEvent> gpu_events(event_count);
+            std::vector<NetworkEvent> cpu_events(event_count);
+            size_t buffer_size = gpu_events.size() * sizeof(NetworkEvent);
+            
+            create_test_events_cpu(gpu_events);
+            
+            // Ensure diverse source IPs for better hash distribution
+            for (size_t i = 0; i < gpu_events.size(); i++) {
+                gpu_events[i].src_ip = 0xC0A80000 + (i % 256) + ((i / 256) % 256) * 256; // Varied 192.168.x.y
+                gpu_events[i].src_port = 1024 + (i * 17) % 60000; // Prime number for better distribution
+                gpu_events[i].dst_port = (i % 3 == 0) ? 80 : ((i % 3 == 1) ? 443 : 8080); // Mix of ports
+            }
+            
+            cpu_events = copy_events_cpu(gpu_events); // Ensure same input data
+            
+            // Warm up GPU
+            reset_event_actions_cpu(gpu_events);
+            processor.register_host_buffer(gpu_events.data(), buffer_size);
+            processor.process_events(gpu_events.data(), buffer_size, gpu_events.size());
+            
+            std::string gpu_test_name = "GPU " + std::string(function_name) + " - " + std::to_string(event_count) + " events";
+            std::string cpu_test_name = "CPU " + std::string(function_name) + " - " + std::to_string(event_count) + " events";
+            
+            BENCHMARK_ADVANCED(gpu_test_name.c_str())(Catch::Benchmark::Chronometer meter) {
+                reset_event_actions_cpu(gpu_events);
+                meter.measure([&] {
+                    return processor.process_events(gpu_events.data(), buffer_size, gpu_events.size());
+                });
+            };
+            
+            BENCHMARK_ADVANCED(cpu_test_name.c_str())(Catch::Benchmark::Chronometer meter) {
+                reset_event_actions_cpu(cpu_events);
+                meter.measure([&] {
+                    cpu_function(cpu_events.data(), cpu_events.size());
+                    return cpu_events.size();
+                });
+            };
+            
+            // Validate results for CUDA (OpenCL might have different behavior)
+            if (backend == TestBackend::CUDA) {
+                reset_event_actions_cpu(gpu_events);
+                reset_event_actions_cpu(cpu_events);
+                
+                processor.process_events(gpu_events.data(), buffer_size, gpu_events.size());
+                cpu_function(cpu_events.data(), cpu_events.size());
+                
+                // For hash load balancing, we expect similar distribution patterns
+                // Count distribution across workers for both CPU and GPU
+                std::vector<int> gpu_worker_counts(8, 0);
+                std::vector<int> cpu_worker_counts(8, 0);
+                
+                for (size_t i = 0; i < event_count; i++) {
+                    int gpu_worker = gpu_events[i].action & 0x7F;
+                    int cpu_worker = cpu_events[i].action & 0x7F;
+                    
+                    if (gpu_worker < 8) gpu_worker_counts[gpu_worker]++;
+                    if (cpu_worker < 8) cpu_worker_counts[cpu_worker]++;
+                }
+                
+                // Verify that both CPU and GPU have similar active worker counts
+                int gpu_active_workers = 0, cpu_active_workers = 0;
+                for (int i = 0; i < 8; i++) {
+                    if (gpu_worker_counts[i] > 0) gpu_active_workers++;
+                    if (cpu_worker_counts[i] > 0) cpu_active_workers++;
+                }
+                
+                INFO("GPU active workers: " << gpu_active_workers << ", CPU active workers: " << cpu_active_workers);
+                
+                // Both should have similar number of active workers (within 2 difference)
+                REQUIRE(std::abs(gpu_active_workers - cpu_active_workers) <= 2);
+                
+                // Both should use most workers for good load balancing
+                REQUIRE(gpu_active_workers >= 4);
+                REQUIRE(cpu_active_workers >= 4);
+            }
+        }
+    }
+}

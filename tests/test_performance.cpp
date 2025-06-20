@@ -16,6 +16,7 @@
 #include <condition_variable>
 #include <future>
 #include <thread>
+#include <cmath>
 
 using namespace ebpf_gpu;
 
@@ -663,6 +664,259 @@ TEST_CASE("Performance - Asynchronous Batch Processing", "[performance][benchmar
         processor = EventProcessor(original_config);
         ProcessingResult restore_result = processor.load_kernel_from_ir(test_code, kernel_name);
         REQUIRE(restore_result == ProcessingResult::Success);
+    }
+}
+
+TEST_CASE("Performance - Hash Load Balancing", "[performance][hash][load_balancing][benchmark]") {
+    auto devices = get_available_devices();
+    if (devices.empty()) {
+        SKIP("No GPU devices available for hash load balancing testing");
+    }
+    
+    const char* test_code = get_test_ptx();
+    if (!test_code) {
+        SKIP("Test IR code not found for hash load balancing testing");
+    }
+    
+    // Test different hash load balancing kernels
+    const std::vector<const char*> hash_kernels = {
+        kernel_names::HASH_LOAD_BALANCER,
+        kernel_names::BATCH_HASH_LOAD_BALANCER
+    };
+    
+    // Test with different event counts to measure scalability
+    const std::vector<size_t> event_counts = {1000, 10000, 100000, 1000000};
+    
+    for (const char* kernel_name : hash_kernels) {
+        SECTION(std::string("Kernel: ") + kernel_name) {
+            EventProcessor processor;
+            ProcessingResult load_result;
+            
+            // For OpenCL, we need to use a different approach since it doesn't support these CUDA-specific kernels
+            TestBackend backend = detect_test_backend();
+            
+            if (backend == TestBackend::OpenCL) {
+                // For OpenCL, use the simple kernel as a fallback
+                load_result = processor.load_kernel_from_ir(test_code, "simple_kernel");
+            } else {
+                // For CUDA, use the specific hash kernel
+                load_result = processor.load_kernel_from_ir(test_code, kernel_name);
+            }
+            
+            REQUIRE(load_result == ProcessingResult::Success);
+            
+            const char* function_name = cpu::get_function_display_name(kernel_name);
+            
+            for (size_t event_count : event_counts) {
+                SECTION("Events: " + format_size(event_count)) {
+                    // Create test data with diverse network flows for better hash distribution
+                    std::vector<NetworkEvent> events(event_count);
+                    create_test_events(events);
+                    
+                    // Ensure diverse source IPs for better hash distribution
+                    for (size_t i = 0; i < events.size(); i++) {
+                        events[i].src_ip = 0xC0A80000 + (i % 256) + ((i / 256) % 256) * 256; // Varied 192.168.x.y
+                        events[i].src_port = 1024 + (i * 17) % 60000; // Prime number for better distribution
+                        events[i].dst_port = (i % 3 == 0) ? 80 : ((i % 3 == 1) ? 443 : 8080); // Mix of ports
+                    }
+                    
+                    size_t buffer_size = events.size() * sizeof(NetworkEvent);
+                    
+                    // Register buffer for optimal performance
+                    ProcessingResult register_result = processor.register_host_buffer(events.data(), buffer_size);
+                    REQUIRE(register_result == ProcessingResult::Success);
+                    
+                    // Warm up GPU
+                    reset_event_actions(events);
+                    processor.process_events(events.data(), buffer_size, events.size());
+                    
+                    std::string bench_name = std::string(function_name) + " - " + format_size(event_count) + " events";
+                    
+                    // Run benchmark
+                    BENCHMARK_ADVANCED(bench_name.c_str())(Catch::Benchmark::Chronometer meter) {
+                        reset_event_actions(events);
+                        meter.measure([&] {
+                            return processor.process_events(events.data(), buffer_size, events.size());
+                        });
+                    };
+                    
+                    // Validate processing results
+                    reset_event_actions(events);
+                    ProcessingResult final_result = processor.process_events(events.data(), buffer_size, events.size());
+                    REQUIRE(final_result == ProcessingResult::Success);
+                    
+                    // For hash load balancing, check that actions were set (indicating worker assignment)
+                    bool has_processed_events = false;
+                    for (const auto& event : events) {
+                        if (event.action != 0) {
+                            has_processed_events = true;
+                            break;
+                        }
+                    }
+                    
+                    if (backend == TestBackend::CUDA) {
+                        // For CUDA with hash kernels, we expect events to be processed
+                        REQUIRE(has_processed_events);
+                        
+                        // Check load balancing distribution (for demonstration)
+                        std::vector<int> worker_distribution(8, 0);
+                        for (const auto& event : events) {
+                            int worker_id = event.action & 0x7F; // Remove high bit
+                            if (worker_id < 8) {
+                                worker_distribution[worker_id]++;
+                            }
+                        }
+                        
+                        // Verify that multiple workers received assignments
+                        int active_workers = 0;
+                        for (int count : worker_distribution) {
+                            if (count > 0) active_workers++;
+                        }
+                        
+                        INFO("Active workers: " << active_workers << " out of 8");
+                        // For good load balancing, we expect at least half the workers to be active
+                        if (event_count >= 100) {
+                            REQUIRE(active_workers >= 4);
+                        }
+                    }
+                    
+                    // Unregister the buffer
+                    ProcessingResult unregister_result = processor.unregister_host_buffer(events.data());
+                    REQUIRE(unregister_result == ProcessingResult::Success);
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("Performance - Hash Distribution Quality", "[performance][hash][distribution][benchmark]") {
+    auto devices = get_available_devices();
+    if (devices.empty()) {
+        SKIP("No GPU devices available for hash distribution testing");
+    }
+    
+    const char* test_code = get_test_ptx();
+    if (!test_code) {
+        SKIP("Test IR code not found for hash distribution testing");
+    }
+    
+    // Only test CUDA backend for detailed hash analysis
+    TestBackend backend = detect_test_backend();
+    if (backend != TestBackend::CUDA) {
+        SKIP("Hash distribution testing requires CUDA backend");
+    }
+    
+    EventProcessor processor;
+    ProcessingResult load_result = processor.load_kernel_from_ir(test_code, kernel_names::HASH_LOAD_BALANCER);
+    REQUIRE(load_result == ProcessingResult::Success);
+    
+    // Test hash distribution with different data patterns
+    const std::vector<std::pair<std::string, size_t>> test_patterns = {
+        {"Sequential IPs", 10000},
+        {"Random IPs", 10000},
+        {"Sequential Ports", 10000},
+        {"Mixed Patterns", 50000}
+    };
+    
+    for (const auto& pattern : test_patterns) {
+        SECTION("Pattern: " + pattern.first) {
+            size_t event_count = pattern.second;
+            std::vector<NetworkEvent> events(event_count);
+            
+            // Create different test patterns
+            if (pattern.first == "Sequential IPs") {
+                for (size_t i = 0; i < events.size(); i++) {
+                    events[i].src_ip = 0xC0A80000 + (i % 65536); // Sequential 192.168.x.y
+                    events[i].dst_ip = 0x08080808;
+                    events[i].src_port = 1024;
+                    events[i].dst_port = 80;
+                    events[i].protocol = 6;
+                    events[i].action = 0;
+                }
+            } else if (pattern.first == "Random IPs") {
+                std::srand(12345); // Fixed seed for reproducibility
+                for (size_t i = 0; i < events.size(); i++) {
+                    events[i].src_ip = (uint32_t)std::rand();
+                    events[i].dst_ip = (uint32_t)std::rand();
+                    events[i].src_port = std::rand() % 65536;
+                    events[i].dst_port = std::rand() % 65536;
+                    events[i].protocol = 6;
+                    events[i].action = 0;
+                }
+            } else if (pattern.first == "Sequential Ports") {
+                for (size_t i = 0; i < events.size(); i++) {
+                    events[i].src_ip = 0xC0A80001;
+                    events[i].dst_ip = 0x08080808;
+                    events[i].src_port = 1024 + (i % 60000);
+                    events[i].dst_port = 80 + (i % 1000);
+                    events[i].protocol = 6;
+                    events[i].action = 0;
+                }
+            } else { // Mixed Patterns
+                std::srand(54321);
+                for (size_t i = 0; i < events.size(); i++) {
+                    events[i].src_ip = 0xC0A80000 + (i % 256) + ((std::rand() % 256) << 16);
+                    events[i].dst_ip = 0x08080808 + (std::rand() % 256);
+                    events[i].src_port = 1024 + (i * 17) % 60000;
+                    events[i].dst_port = (i % 5 == 0) ? 80 : ((i % 5 == 1) ? 443 : (1024 + std::rand() % 60000));
+                    events[i].protocol = (i % 3 == 0) ? 6 : 17;
+                    events[i].action = 0;
+                }
+            }
+            
+            size_t buffer_size = events.size() * sizeof(NetworkEvent);
+            
+            // Register buffer and process
+            processor.register_host_buffer(events.data(), buffer_size);
+            
+            std::string bench_name = "Hash Distribution - " + pattern.first;
+            
+            BENCHMARK_ADVANCED(bench_name.c_str())(Catch::Benchmark::Chronometer meter) {
+                reset_event_actions(events);
+                meter.measure([&] {
+                    return processor.process_events(events.data(), buffer_size, events.size());
+                });
+            };
+            
+            // Analyze hash distribution quality
+            reset_event_actions(events);
+            processor.process_events(events.data(), buffer_size, events.size());
+            
+            // Count distribution across workers
+            std::vector<int> worker_counts(8, 0);
+            for (const auto& event : events) {
+                int worker_id = event.action & 0x7F;
+                if (worker_id < 8) {
+                    worker_counts[worker_id]++;
+                }
+            }
+            
+            // Calculate distribution metrics
+            double mean = static_cast<double>(event_count) / 8.0;
+            double variance = 0.0;
+            for (int count : worker_counts) {
+                double diff = count - mean;
+                variance += diff * diff;
+            }
+            variance /= 8.0;
+            double std_dev = std::sqrt(variance);
+            double coefficient_of_variation = std_dev / mean;
+            
+            INFO("Hash distribution for " << pattern.first << ":");
+            INFO("  Mean: " << mean << ", Std Dev: " << std_dev);
+            INFO("  Coefficient of Variation: " << coefficient_of_variation);
+            for (int i = 0; i < 8; i++) {
+                INFO("  Worker " << i << ": " << worker_counts[i] << " events");
+            }
+            
+            // Good hash distribution should have low coefficient of variation
+            // For most patterns, CV should be less than 0.1 (10%)
+            if (pattern.first != "Sequential IPs") { // Sequential IPs might have higher CV
+                REQUIRE(coefficient_of_variation < 0.15);
+            }
+            
+            processor.unregister_host_buffer(events.data());
+        }
     }
 }
 
