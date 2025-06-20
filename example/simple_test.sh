@@ -50,7 +50,7 @@ echo "3. Testing different virtual devices..."
 echo ""
 echo "=== Test 1: null PMD (auto-generates packets) ==="
 echo "Running for 5 seconds..."
-timeout 5s ./dpdk_example --vdev=net_null0 -l 0 || echo "Test completed"
+timeout 5s build/example/dpdk_example --vdev=net_null0 -l 0 || echo "Test completed"
 
 echo ""
 echo "=== Test 2: TAP interface ==="
@@ -58,7 +58,7 @@ echo "Creating TAP interface..."
 
 # Run DPDK app with TAP interface in background
 echo "Starting DPDK application with TAP interface..."
-./dpdk_example --vdev=net_tap0,iface=test0 -l 0 &
+build/example/dpdk_example --vdev=net_tap0,iface=test0 -l 0 &
 DPDK_PID=$!
 
 # Wait a moment for interface to be created

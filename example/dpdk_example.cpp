@@ -5,6 +5,7 @@
 #include <cinttypes>
 #include <csignal>
 #include <ctime>
+#include <cmath>
 #include <sys/time.h>
 #include <unistd.h>
 #include <memory>
@@ -51,8 +52,12 @@ struct app_config {
     bool use_gpu;
     char kernel_path[MAX_PATH_LEN];
     char function_name[MAX_PATH_LEN];
+    char cpu_function[MAX_PATH_LEN];  /* CPU function name */
     int device_id;
     int batch_size;
+    bool benchmark_mode;
+    int benchmark_duration;
+    bool verbose;
 };
 
 /* Global metrics */
@@ -75,6 +80,164 @@ static uint64_t get_timestamp_sec(void)
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec;
+}
+
+/* CPU Function Implementations */
+
+/* FNV-1a hash function for CPU load balancing */
+static uint32_t cpu_fnv1a_hash(uint32_t src_ip, uint32_t dst_ip, uint16_t src_port, uint16_t dst_port) {
+    // FNV-1a hash algorithm for load balancing
+    uint32_t hash = 2166136261U; // FNV offset basis
+    const uint32_t prime = 16777619U; // FNV prime
+    
+    // Hash source IP
+    hash ^= (src_ip & 0xFF);
+    hash *= prime;
+    hash ^= ((src_ip >> 8) & 0xFF);
+    hash *= prime;
+    hash ^= ((src_ip >> 16) & 0xFF);
+    hash *= prime;
+    hash ^= ((src_ip >> 24) & 0xFF);
+    hash *= prime;
+    
+    // Hash destination IP
+    hash ^= (dst_ip & 0xFF);
+    hash *= prime;
+    hash ^= ((dst_ip >> 8) & 0xFF);
+    hash *= prime;
+    hash ^= ((dst_ip >> 16) & 0xFF);
+    hash *= prime;
+    hash ^= ((dst_ip >> 24) & 0xFF);
+    hash *= prime;
+    
+    // Hash source port
+    hash ^= (src_port & 0xFF);
+    hash *= prime;
+    hash ^= ((src_port >> 8) & 0xFF);
+    hash *= prime;
+    
+    // Hash destination port
+    hash ^= (dst_port & 0xFF);
+    hash *= prime;
+    hash ^= ((dst_port >> 8) & 0xFF);
+    hash *= prime;
+    
+    return hash;
+}
+
+/* CPU implementation of packet filter */
+static uint8_t cpu_packet_filter(const NetworkEvent* event) {
+    // Simple filtering logic
+    if (event->protocol == 6) {  // TCP
+        if (event->dst_port == 80) {  // HTTP
+            return 1;  // PASS
+        }
+        else if (event->dst_port == 443) {  // HTTPS
+            return 1;  // PASS
+        }
+    }
+    else if (event->protocol == 17) {  // UDP
+        if (event->dst_port > 1024) {  // High ports
+            return 1;  // PASS
+        }
+    }
+    return 0;  // DROP
+}
+
+/* CPU implementation of hash load balancer */
+static uint8_t cpu_hash_load_balancer(const NetworkEvent* event) {
+    // Calculate hash for load balancing
+    uint32_t hash = cpu_fnv1a_hash(event->src_ip, event->dst_ip, event->src_port, event->dst_port);
+    
+    // Assign to worker queue based on hash (use fixed number of workers)
+    const uint32_t num_workers = 8; // Fixed number of workers
+    uint32_t worker_id = hash % num_workers;
+    
+    // Store worker assignment in the action field (for demonstration)
+    uint8_t action = worker_id % 256; // Clamp to uint8_t range
+    
+    // For demonstration: also apply basic filtering
+    // Allow traffic only if assigned to even worker IDs
+    if (worker_id % 2 == 0) {
+        // Keep the worker assignment but mark as pass
+        action = (action & 0x7F) | 0x80; // Set high bit for PASS
+    }
+    // Odd worker IDs remain as DROP (just worker assignment without high bit)
+    
+    return action;
+}
+
+/* CPU implementation of batch hash load balancer */
+static uint8_t cpu_batch_hash_load_balancer(const NetworkEvent* event) {
+    // Fixed number of workers
+    const uint32_t num_workers = 8;
+    
+    // Calculate hash for load balancing
+    uint32_t hash = cpu_fnv1a_hash(event->src_ip, event->dst_ip, event->src_port, event->dst_port);
+    
+    // Assign to worker queue based on hash
+    uint32_t worker_id = hash % num_workers;
+    
+    // Store worker assignment in the action field
+    uint8_t action = worker_id % 256;
+    
+    // Apply load balancing logic - balance traffic across workers
+    // Use consistent hashing for better distribution
+    uint32_t balanced_worker = (hash >> 16) % num_workers;
+    if (balanced_worker != worker_id) {
+        // Reassign for better balance
+        action = balanced_worker % 256;
+    }
+    
+    // Mark as processed (set high bit)
+    action |= 0x80;
+    
+    return action;
+}
+
+/* CPU implementation of packet counter */
+static uint8_t cpu_packet_counter(const NetworkEvent* event) {
+    // Count packets by size ranges and return the range as action
+    uint32_t size = event->length;
+    
+    if (size < 128)
+        return 0;
+    else if (size < 256)
+        return 1;
+    else if (size < 512)
+        return 2;
+    else if (size < 1024)
+        return 3;
+    else
+        return 4;
+}
+
+/* Process packets using CPU functions */
+static uint32_t process_packets_cpu(const std::vector<NetworkEvent>& events, const char* function_name) {
+    uint32_t processed_count = 0;
+    
+    for (size_t i = 0; i < events.size(); i++) {
+        NetworkEvent* event = const_cast<NetworkEvent*>(&events[i]);
+        
+        if (strcmp(function_name, "packet_filter") == 0) {
+            event->action = cpu_packet_filter(event);
+        } else if (strcmp(function_name, "hash_load_balancer") == 0) {
+            event->action = cpu_hash_load_balancer(event);
+        } else if (strcmp(function_name, "batch_hash_load_balancer") == 0) {
+            event->action = cpu_batch_hash_load_balancer(event);
+        } else if (strcmp(function_name, "packet_counter") == 0) {
+            event->action = cpu_packet_counter(event);
+        } else {
+            // Default: simple pass-through
+            event->action = 1;
+        }
+        
+        if (event->action != 0) {
+            processed_count++;
+        }
+    }
+    
+    return processed_count;
 }
 
 /* Initialize metrics */
@@ -220,12 +383,29 @@ static void main_loop(void)
     /* Print mode indicator */
     if (g_config.use_gpu) {
         std::cout << "\033[1;32m[GPU MODE] Processing packets with GPU acceleration\033[0m" << std::endl;
+        std::cout << "GPU Kernel Function: " << g_config.function_name << std::endl;
     } else {
         std::cout << "\033[1;33m[CPU MODE] Processing packets without GPU acceleration\033[0m" << std::endl;
+        if (g_config.cpu_function[0] != '\0') {
+            std::cout << "CPU Function: " << g_config.cpu_function << std::endl;
+        } else {
+            std::cerr << "\033[1;33mNo CPU function specified - using basic processing\033[0m" << std::endl;
+        }
         std::cerr << "\033[1;33mReason for CPU mode: " 
                   << (g_config.kernel_path[0] == '\0' ? "No kernel specified" : 
                      (g_config.function_name[0] == '\0' ? "No function specified" : 
                      "GPU initialization failed")) << "\033[0m" << std::endl;
+    }
+    
+    /* Benchmark mode setup */
+    uint64_t benchmark_end_time = 0;
+    if (g_config.benchmark_mode) {
+        benchmark_end_time = get_timestamp_sec() + g_config.benchmark_duration;
+        std::cout << "\033[1;36m[BENCHMARK MODE] Running for " << g_config.benchmark_duration << " seconds\033[0m" << std::endl;
+        
+        if (strstr(g_config.function_name, "hash") != nullptr) {
+            std::cout << "Testing hash load balancing performance..." << std::endl;
+        }
     }
     
     /* Pre-allocate packet array */
@@ -256,6 +436,12 @@ static void main_loop(void)
     
     /* Run until the application is quit or killed */
     while (!force_quit) {
+        /* Check benchmark timeout */
+        if (g_config.benchmark_mode && get_timestamp_sec() >= benchmark_end_time) {
+            std::cout << "\n\033[1;36m[BENCHMARK] Time limit reached, stopping...\033[0m" << std::endl;
+            break;
+        }
+        
         /* Poll for packets */
         uint64_t bytes_received = 0;
         int nb_rx = dpdk_poll(packets, MAX_PACKETS_PER_POLL, &bytes_received);
@@ -266,10 +452,12 @@ static void main_loop(void)
         }
         
         if (nb_rx > 0) {
-            /* Display first few packets */
-            for (int i = 0; i < nb_rx && display_count < 10; i++, display_count++) {
-                std::cout << "Packet on port " << packets[i].port 
-                          << ": length = " << packets[i].length << " bytes" << std::endl;
+            /* Display first few packets only in verbose mode or non-benchmark mode */
+            if ((g_config.verbose || !g_config.benchmark_mode) && display_count < 10) {
+                for (int i = 0; i < nb_rx && display_count < 10; i++, display_count++) {
+                    std::cout << "Packet on port " << packets[i].port 
+                              << ": length = " << packets[i].length << " bytes" << std::endl;
+                }
             }
             
             /* Process packets on GPU if enabled */
@@ -278,7 +466,7 @@ static void main_loop(void)
                 // Prepare NetworkEvent structures for GPU processing
                 std::vector<NetworkEvent> events(nb_rx);
                 
-                // Fill in NetworkEvent structures
+                // Fill in NetworkEvent structures with better network parsing
                 for (int i = 0; i < nb_rx; i++) {
                     events[i].data = reinterpret_cast<uint8_t*>(packets[i].data);
                     events[i].length = packets[i].length;
@@ -357,22 +545,96 @@ static void main_loop(void)
                 }
             } else {
                 /* CPU processing mode */
-                /* Count packets by port */
-                uint16_t packets_by_port[MAX_PORTS] = {0};
-                uint64_t bytes_by_port[MAX_PORTS] = {0};
+                uint32_t processed_count = 0;
                 
-                for (int i = 0; i < nb_rx; i++) {
-                    uint16_t port = packets[i].port;
-                    if (port < MAX_PORTS) {
-                        packets_by_port[port]++;
-                        bytes_by_port[port] += packets[i].length;
+                if (g_config.cpu_function[0] != '\0') {
+                    // Create NetworkEvent structures for CPU processing
+                    std::vector<NetworkEvent> events(nb_rx);
+                    
+                    // Fill in NetworkEvent structures with better network parsing
+                    for (int i = 0; i < nb_rx; i++) {
+                        events[i].data = reinterpret_cast<uint8_t*>(packets[i].data);
+                        events[i].length = packets[i].length;
+                        events[i].timestamp = get_timestamp_sec() * 1000000; // Microseconds
+                        events[i].action = 0; // Default: DROP
+                        
+                        // Extract basic packet info if possible
+                        if (packets[i].length >= 34) { // Ethernet (14) + basic IP (20)
+                            const uint8_t* pkt = reinterpret_cast<const uint8_t*>(packets[i].data);
+                            
+                            // Check if IPv4 (Eth type 0x0800)
+                            if (pkt[12] == 0x08 && pkt[13] == 0x00) {
+                                const uint8_t* ip = pkt + 14;
+                                events[i].protocol = ip[9]; // Protocol
+                                
+                                // Extract IPs (network byte order)
+                                memcpy(&events[i].src_ip, ip + 12, 4);
+                                memcpy(&events[i].dst_ip, ip + 16, 4);
+                                
+                                // Get IP header length
+                                uint8_t ip_hdr_len = (ip[0] & 0x0F) * 4;
+                                
+                                // Get TCP/UDP ports if we have enough data
+                                if (events[i].protocol == 6 || events[i].protocol == 17) { // TCP or UDP
+                                    if (packets[i].length >= 14 + ip_hdr_len + 4) { // Headers + first 4 bytes of TCP/UDP
+                                        const uint8_t* tp = ip + ip_hdr_len;
+                                        
+                                        // Get source & dest ports (in network byte order)
+                                        memcpy(&events[i].src_port, tp, 2);
+                                        memcpy(&events[i].dst_port, tp + 2, 2);
+                                    }
+                                }
+                            }
+                        }
                     }
-                }
-                
-                /* Update metrics in batch */
-                for (uint16_t port = 0; port < MAX_PORTS; port++) {
-                    if (packets_by_port[port] > 0) {
-                        update_metrics(port, packets_by_port[port], bytes_by_port[port], 0);
+                    
+                    // Process the events on CPU
+                    processed_count = process_packets_cpu(events, g_config.cpu_function);
+                    
+                    /* Count packets by port */
+                    uint16_t packets_by_port[MAX_PORTS] = {0};
+                    uint64_t bytes_by_port[MAX_PORTS] = {0};
+                    uint32_t processed_by_port[MAX_PORTS] = {0};
+                    
+                    for (int i = 0; i < nb_rx; i++) {
+                        uint16_t port = packets[i].port;
+                        if (port < MAX_PORTS) {
+                            packets_by_port[port]++;
+                            bytes_by_port[port] += packets[i].length;
+                            
+                            // Count processed packets per port
+                            if (events[i].action != 0) {
+                                processed_by_port[port]++;
+                            }
+                        }
+                    }
+                    
+                    /* Update metrics in batch */
+                    for (uint16_t port = 0; port < MAX_PORTS; port++) {
+                        if (packets_by_port[port] > 0) {
+                            update_metrics(port, packets_by_port[port], bytes_by_port[port], 
+                                          processed_by_port[port]);
+                        }
+                    }
+                } else {
+                    /* Basic CPU processing mode without function */
+                    /* Count packets by port */
+                    uint16_t packets_by_port[MAX_PORTS] = {0};
+                    uint64_t bytes_by_port[MAX_PORTS] = {0};
+                    
+                    for (int i = 0; i < nb_rx; i++) {
+                        uint16_t port = packets[i].port;
+                        if (port < MAX_PORTS) {
+                            packets_by_port[port]++;
+                            bytes_by_port[port] += packets[i].length;
+                        }
+                    }
+                    
+                    /* Update metrics in batch */
+                    for (uint16_t port = 0; port < MAX_PORTS; port++) {
+                        if (packets_by_port[port] > 0) {
+                            update_metrics(port, packets_by_port[port], bytes_by_port[port], 0);
+                        }
                     }
                 }
             }
@@ -401,13 +663,37 @@ static void print_usage(const char *program_name)
     std::cout << "Application options:" << std::endl;
     std::cout << "  --kernel=PATH         Path to the CUDA kernel file (.cu or .ptx)" << std::endl;
     std::cout << "  --function=NAME       CUDA kernel function name to use" << std::endl;
+    std::cout << "  --cpu-function=NAME   CPU function name to use" << std::endl;
     std::cout << "  --no-gpu              Disable GPU processing" << std::endl;
     std::cout << "  --device=ID           GPU device ID to use (-1 for auto)" << std::endl;
     std::cout << "  --batch-size=SIZE     Maximum batch size for GPU processing" << std::endl;
+    std::cout << "  --benchmark           Enable benchmark mode" << std::endl;
+    std::cout << "  --duration=SEC        Benchmark duration in seconds (default: 10)" << std::endl;
+    std::cout << "  --verbose             Enable verbose output" << std::endl;
     std::cout << "  --help                Display this help message" << std::endl;
+    std::cout << "\nAvailable kernel functions (GPU):" << std::endl;
+    std::cout << "  packet_filter         Basic TCP/HTTP packet filtering" << std::endl;
+    std::cout << "  hash_load_balancer    Hash-based load balancing across 8 workers" << std::endl;
+    std::cout << "  batch_hash_load_balancer  Optimized batch hash load balancing" << std::endl;
+    std::cout << "  packet_counter        Count packets by size categories" << std::endl;
+    std::cout << "\nAvailable CPU functions:" << std::endl;
+    std::cout << "  packet_filter         Basic TCP/HTTP packet filtering (CPU)" << std::endl;
+    std::cout << "  hash_load_balancer    Hash-based load balancing across 8 workers (CPU)" << std::endl;
+    std::cout << "  batch_hash_load_balancer  Optimized batch hash load balancing (CPU)" << std::endl;
+    std::cout << "  packet_counter        Count packets by size categories (CPU)" << std::endl;
     std::cout << "\nExamples:" << std::endl;
+    std::cout << "  # Basic packet filtering:" << std::endl;
     std::cout << "  " << program_name << " --vdev=net_null0 -l 0 -- --kernel=examples/simple_packet_filter.cu --function=packet_filter" << std::endl;
+    std::cout << "  # Hash load balancing:" << std::endl;
+    std::cout << "  " << program_name << " --vdev=net_null0 -l 0 -- --kernel=examples/simple_packet_filter.cu --function=hash_load_balancer --benchmark" << std::endl;
+    std::cout << "  # Batch hash load balancing with custom duration:" << std::endl;
+    std::cout << "  " << program_name << " --vdev=net_null0 -l 0 -- --kernel=examples/simple_packet_filter.cu --function=batch_hash_load_balancer --benchmark --duration=30" << std::endl;
+    std::cout << "  # CPU mode without GPU:" << std::endl;
     std::cout << "  " << program_name << " --vdev=net_tap0,iface=test0 -l 0 -- --no-gpu" << std::endl;
+    std::cout << "  # CPU hash load balancing:" << std::endl;
+    std::cout << "  " << program_name << " --vdev=net_null0 -l 0 -- --no-gpu --cpu-function=hash_load_balancer --benchmark" << std::endl;
+    std::cout << "  # CPU packet filtering:" << std::endl;
+    std::cout << "  " << program_name << " --vdev=net_null0 -l 0 -- --no-gpu --cpu-function=packet_filter --verbose" << std::endl;
 }
 
 /* Parse application arguments */
@@ -424,8 +710,12 @@ static void parse_app_args(int argc, char *argv[])
     g_config.use_gpu = false;  /* Disabled by default */
     g_config.device_id = -1;   /* Auto-select */
     g_config.batch_size = 10000;
+    g_config.benchmark_mode = false;
+    g_config.benchmark_duration = 10;  /* Default 10 seconds */
+    g_config.verbose = false;
     g_config.kernel_path[0] = '\0';
     g_config.function_name[0] = '\0';
+    g_config.cpu_function[0] = '\0';
     
     /* DPDK EAL replaces -- with program name, so look for program name after initial args */
     int app_args_idx = 1;
@@ -454,12 +744,22 @@ static void parse_app_args(int argc, char *argv[])
                 g_config.function_name[sizeof(g_config.function_name) - 1] = '\0';
                 g_config.use_gpu = true;  /* Enable GPU if function specified */
                 std::cout << "Setting function name: " << g_config.function_name << std::endl;
+            } else if (strncmp(argv[i], "--cpu-function=", 15) == 0) {
+                strncpy(g_config.cpu_function, argv[i] + 15, sizeof(g_config.cpu_function) - 1);
+                g_config.cpu_function[sizeof(g_config.cpu_function) - 1] = '\0';
+                std::cout << "Setting CPU function name: " << g_config.cpu_function << std::endl;
             } else if (strcmp(argv[i], "--no-gpu") == 0) {
                 g_config.use_gpu = false;
             } else if (strncmp(argv[i], "--device=", 9) == 0) {
                 g_config.device_id = atoi(argv[i] + 9);
             } else if (strncmp(argv[i], "--batch-size=", 13) == 0) {
                 g_config.batch_size = atoi(argv[i] + 13);
+            } else if (strcmp(argv[i], "--benchmark") == 0) {
+                g_config.benchmark_mode = true;
+            } else if (strncmp(argv[i], "--duration=", 11) == 0) {
+                g_config.benchmark_duration = atoi(argv[i] + 11);
+            } else if (strcmp(argv[i], "--verbose") == 0) {
+                g_config.verbose = true;
             } else if (strcmp(argv[i], "--help") == 0) {
                 print_usage(argv[0]);
                 dpdk_cleanup();
