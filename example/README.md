@@ -30,7 +30,7 @@ To build the DPDK example:
 
 ```bash
 # First make sure DPDK is installed on your system
-make dpdk_example
+make
 ```
 
 ### Running
@@ -38,7 +38,7 @@ make dpdk_example
 The application accepts both DPDK EAL options and application-specific options:
 
 ```bash
-./dpdk_example [EAL options] -- [application options]
+sudo ./build/example/dpdk_example --vdev=net_null0 -l 0 -- --kernel=example/simple_packet_filter.cu --function=packet_filter
 ```
 
 Application options:
