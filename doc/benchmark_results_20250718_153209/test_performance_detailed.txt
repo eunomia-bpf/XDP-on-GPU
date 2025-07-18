@@ -1,0 +1,736 @@
+Randomness seeded to: 1124949471
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+test_performance is a Catch2 v3.4.0 host application.
+Run with -? for options
+
+-------------------------------------------------------------------------------
+Performance - Basic Operations
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:130
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Event processing - 1000 events                 100             1     4.3285 ms 
+                                         51.449 us    50.2491 us    52.7193 us 
+                                        6.31451 us    5.92898 us    6.69715 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Zero-Copy vs Normal Copy
+  Events: 100
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:186
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Normal copy - 100 events                       100             1     2.5178 ms 
+                                        25.8797 us    25.7529 us    26.1862 us 
+                                         946.01 ns    462.807 ns    1.92399 us 
+                                                                               
+Zero-copy - 100 events                         100             1     6.2754 ms 
+                                        66.9043 us    66.4579 us    68.5698 us 
+                                        3.84683 us    986.265 ns    8.80386 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Zero-Copy vs Normal Copy
+  Events: 1K
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:186
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Normal copy - 1K events                        100             1     4.0948 ms 
+                                        44.3557 us    43.5958 us    45.2574 us 
+                                        4.22426 us    3.69274 us    4.70264 us 
+                                                                               
+Zero-copy - 1K events                          100             1      5.555 ms 
+                                        60.5062 us    59.7049 us    61.5961 us 
+                                        4.68742 us    3.67707 us    5.60849 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Zero-Copy vs Normal Copy
+  Events: 10K
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:186
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Normal copy - 10K events                       100             1    12.4586 ms 
+                                        158.803 us    157.453 us    161.966 us 
+                                        10.3894 us    5.55654 us    16.8207 us 
+                                                                               
+Zero-copy - 10K events                         100             1     5.7334 ms 
+                                        62.6165 us    61.8754 us    63.7988 us 
+                                        4.67981 us    3.19014 us    6.37453 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Zero-Copy vs Normal Copy
+  Events: 100K
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:186
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Normal copy - 100K events                      100             1    75.1678 ms 
+                                         1.2697 ms    1.26338 ms    1.28192 ms 
+                                        43.1663 us    27.3226 us    83.2704 us 
+                                                                               
+Zero-copy - 100K events                        100             1    29.0727 ms 
+                                        292.623 us    292.302 us    293.895 us 
+                                        2.89385 us    539.445 ns    6.79204 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Zero-Copy vs Normal Copy
+  Events: 1M
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:186
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Normal copy - 1M events                        100             1     757.04 ms 
+                                        10.5711 ms    10.5346 ms    10.6044 ms 
+                                        177.428 us    159.303 us    198.946 us 
+                                                                               
+Zero-copy - 1M events                          100             1    350.434 ms 
+                                        3.50719 ms    3.50328 ms    3.51121 ms 
+                                        20.2253 us     18.249 us     23.093 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Unified Memory vs Normal Copy
+  Events: 100
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:258
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Normal copy - 100 events                       100             1     2.4918 ms 
+                                        25.6563 us    25.5221 us    25.9883 us 
+                                        1.01261 us    509.532 ns    2.05907 us 
+                                                                               
+Unified memory - 100 events                    100             2     3.1828 ms 
+                                        15.9641 us    15.9241 us    16.0111 us 
+                                        219.915 ns    181.685 ns    278.122 ns 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Unified Memory vs Normal Copy
+  Events: 1K
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:258
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Normal copy - 1K events                        100             1     4.1464 ms 
+                                         47.593 us    46.6067 us    48.7492 us 
+                                         5.4603 us    4.83583 us    6.17331 us 
+                                                                               
+Unified memory - 1K events                     100             1     1.9898 ms 
+                                        20.0435 us      19.86 us    20.2265 us 
+                                        941.758 ns    907.883 ns    1.00998 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Unified Memory vs Normal Copy
+  Events: 10K
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:258
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Normal copy - 10K events                       100             1     13.614 ms 
+                                        185.189 us    183.542 us    189.102 us 
+                                        12.6585 us    6.10976 us    20.8558 us 
+                                                                               
+Unified memory - 10K events                    100             1     2.8903 ms 
+                                        28.9919 us    28.9274 us    29.1187 us 
+                                        444.275 ns    271.056 ns     853.46 ns 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Unified Memory vs Normal Copy
+  Events: 100K
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:258
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Normal copy - 100K events                      100             1    72.6476 ms 
+                                        1.09371 ms      1.091 ms    1.10233 ms 
+                                        22.3417 us    7.15905 us    49.1267 us 
+                                                                               
+Unified memory - 100K events                   100             1     2.9111 ms 
+                                        30.3658 us    30.1544 us    30.6217 us 
+                                        1.18481 us    1.00466 us    1.42243 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Scaling Test
+  Events: 100
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:316
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Scaling - 100 events                           100             1     2.4827 ms 
+                                        25.4887 us    25.3846 us    25.6478 us 
+                                        645.774 ns    450.505 ns    1.10688 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Scaling Test
+  Events: 1K
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:316
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Scaling - 1K events (pinned)                   100             1     3.6116 ms 
+                                        37.4435 us    37.2068 us    37.7994 us 
+                                        1.45843 us    1.11158 us    2.25678 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Scaling Test
+  Events: 10K
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:316
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Scaling - 10K events                           100             1    12.8567 ms 
+                                        170.049 us    168.526 us     173.55 us 
+                                        11.4314 us     6.2298 us    18.3581 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Scaling Test
+  Events: 100K
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:316
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Scaling - 100K events                          100             1    71.0538 ms 
+                                         996.68 us     990.68 us    1.02229 ms 
+                                        54.1939 us    9.68828 us    127.496 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Scaling Test
+  Events: 1M
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:316
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Scaling - 1M events                            100             1    756.428 ms 
+                                        10.3359 ms    10.3021 ms    10.3795 ms 
+                                        194.156 us    157.027 us    254.275 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Single vs Multiple Events
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:349
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Multiple events - 1K events batch              100             1     4.1597 ms 
+                                        49.0623 us    47.9839 us    50.1923 us 
+                                         5.6408 us    5.31158 us    5.94433 us 
+                                                                               
+Single events - 1K individual calls            100             1     1.55025 s 
+                                        15.4744 ms    15.4678 ms    15.4851 ms 
+                                        41.5587 us    29.6545 us    66.1151 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Memory Transfer vs Compute
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:402
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Small events - 100 events (64B                                                 
+each)                                          100             1    150.746 ms 
+                                        1.50993 ms    1.50643 ms    1.52358 ms 
+                                         32.195 us    4.72341 us    76.0286 us 
+                                                                               
+Large events - 100 events (1KB                                                 
+each)                                          100             1    153.542 ms 
+                                        1.53565 ms    1.53431 ms    1.53889 ms 
+                                        10.0215 us    5.26608 us    20.7521 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Pinned vs Pageable Memory
+  Events: 100
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:484
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Pageable memory - 100 events                   100             1     2.4861 ms 
+                                        25.6801 us    25.4622 us    26.0831 us 
+                                        1.46343 us    929.474 ns    2.20955 us 
+                                                                               
+Registered pinned memory - 100                                                 
+events                                         100             1     2.1769 ms 
+                                        23.1483 us    21.9254 us    28.7597 us 
+                                        11.3406 us    1.40692 us    26.8369 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Pinned vs Pageable Memory
+  Events: 1000
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:484
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Pageable memory - 1K events                    100             1      4.017 ms 
+                                        44.5163 us    43.6876 us    45.4337 us 
+                                        4.45192 us    4.06143 us    4.76569 us 
+                                                                               
+Registered pinned memory - 1K                                                  
+events                                         100             1     3.6114 ms 
+                                        37.4865 us    37.2197 us    37.8636 us 
+                                        1.60195 us    1.24981 us    2.32068 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Pinned vs Pageable Memory
+  Events: 10000
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:484
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Pageable memory - 10K events                   100             1    12.7896 ms 
+                                        168.069 us    166.766 us    171.377 us 
+                                        9.42258 us     1.5166 us    17.2108 us 
+                                                                               
+Registered pinned memory - 10K                                                 
+events                                         100             1     5.3192 ms 
+                                        65.8892 us    64.6144 us    67.5619 us 
+                                        7.40619 us    5.81016 us    9.19529 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Pinned vs Pageable Memory
+  Events: 100000
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:484
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Pageable memory - 100K events                  100             1    72.3045 ms 
+                                        1.08085 ms    1.07541 ms    1.08488 ms 
+                                        23.7124 us    18.8562 us    28.8614 us 
+                                                                               
+Registered pinned memory - 100K                                                
+events                                         100             1    18.2734 ms 
+                                        213.194 us    210.457 us    220.096 us 
+                                        19.4256 us    1.03929 us    35.7925 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Pinned vs Pageable Memory
+  Events: 1000000
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:484
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Pageable memory - 1M events                    100             1    751.467 ms 
+                                        9.12971 ms    9.07562 ms    9.16979 ms 
+                                        234.784 us    189.512 us    348.171 us 
+                                                                               
+Registered pinned memory - 1M                                                  
+events                                         100             1    98.7268 ms 
+                                        1.00512 ms    999.656 us    1.02685 ms 
+                                        51.1258 us    5.65561 us    121.376 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Asynchronous Batch Processing
+  Comparison: Sync vs Async Processing
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:551
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Sync processing - 1M events                    100             1    98.7888 ms 
+                                        990.902 us     986.77 us    1.00662 ms 
+                                         36.991 us    7.39679 us    86.7836 us 
+                                                                               
+Async processing - 1M events                   100             1    40.7644 ms 
+                                        103.484 us    102.836 us    105.847 us 
+                                        5.62486 us    1.52613 us    12.9595 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Asynchronous Batch Processing
+  Comparison: Different Batch Sizes
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:589
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Batch size: 1K                                 100             1     1.01235 s 
+                                        10.0932 ms    10.0702 ms    10.1156 ms 
+                                        116.052 us    108.521 us    124.806 us 
+                                                                               
+Batch size: 10K                                100             1    199.263 ms 
+                                        1.99781 ms    1.99248 ms    2.00663 ms 
+                                        34.1233 us    23.6749 us    62.0573 us 
+                                                                               
+Batch size: 50K                                100             1    102.229 ms 
+                                        1.03342 ms    1.02653 ms    1.05156 ms 
+                                        53.3409 us    25.6799 us    113.603 us 
+                                                                               
+Batch size: 100K                               100             1    98.7767 ms 
+                                         990.04 us     987.19 us    1.00015 ms 
+                                        24.4779 us    7.42055 us    55.9582 us 
+                                                                               
+Batch size: 250K                               100             1    103.329 ms 
+                                         1.0387 ms    1.03494 ms    1.05599 ms 
+                                        35.7285 us    2.84573 us    84.9878 us 
+                                                                               
+Batch size: 500K                               100             1    116.496 ms 
+                                        1.16601 ms    1.16468 ms      1.171 ms 
+                                        11.6276 us    3.05909 us    26.8569 us 
+                                                                               
+Batch size: 1M                                 100             1    147.678 ms 
+                                        1.47707 ms    1.47607 ms    1.48016 ms 
+                                        8.17777 us    3.30556 us    17.9901 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Asynchronous Batch Processing
+  Comparison: Batch Size vs Stream Count
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:630
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Streams: 1, Batch: 250K                        100             1    708.833 ms 
+                                        7.00346 ms    6.99668 ms    7.01385 ms 
+                                        42.1706 us    30.6105 us    68.6279 us 
+                                                                               
+Streams: 2, Batch: 250K                        100             1    700.223 ms 
+                                        6.98971 ms    6.98222 ms    7.00504 ms 
+                                        52.4978 us    29.1388 us    93.9741 us 
+                                                                               
+Streams: 4, Batch: 250K                        100             1    700.108 ms 
+                                        6.99709 ms    6.98905 ms     7.0142 ms 
+                                        57.2118 us    31.3446 us    114.984 us 
+                                                                               
+Streams: 8, Batch: 250K                        100             1    700.159 ms 
+                                        7.00424 ms    6.99762 ms    7.01798 ms 
+                                        46.4538 us    24.1132 us    83.1935 us 
+                                                                               
+Streams: 16, Batch: 250K                       100             1    701.219 ms 
+                                        7.00663 ms    7.00081 ms     7.0138 ms 
+                                        32.8958 us     26.333 us    45.9311 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Hash Load Balancing
+  Kernel: _ZN8ebpf_gpu18hash_load_balancerEPNS_12NetworkEventEm
+  Events: 1K
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:711
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Hash Load Balancer - 1K events                 100             1     2.7998 ms 
+                                        29.1347 us    28.8545 us    29.4603 us 
+                                        1.54307 us    1.23002 us    2.03309 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Hash Load Balancing
+  Kernel: _ZN8ebpf_gpu18hash_load_balancerEPNS_12NetworkEventEm
+  Events: 10K
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:711
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Hash Load Balancer - 10K events                100             1     2.8644 ms 
+                                        42.5035 us    41.3035 us    44.2842 us 
+                                        7.37032 us    5.39493 us    9.46707 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Hash Load Balancing
+  Kernel: _ZN8ebpf_gpu18hash_load_balancerEPNS_12NetworkEventEm
+  Events: 100K
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:711
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Hash Load Balancer - 100K events               100             1    16.0154 ms 
+                                        194.887 us    193.141 us    201.409 us 
+                                        15.7098 us    2.91765 us    36.8713 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Hash Load Balancing
+  Kernel: _ZN8ebpf_gpu18hash_load_balancerEPNS_12NetworkEventEm
+  Events: 1M
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:711
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Hash Load Balancer - 1M events                 100             1    97.0023 ms 
+                                        991.215 us    986.783 us    1.01157 ms 
+                                        41.4701 us    4.38399 us    98.4396 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Hash Load Balancing
+  Kernel: _ZN8ebpf_gpu24batch_hash_load_balancerEPNS_12NetworkEventEm
+  Events: 1K
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:711
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Batch Hash Load Balancer - 1K                                                  
+events                                         100             1     2.8061 ms 
+                                        29.2618 us    29.0181 us    29.6425 us 
+                                        1.51291 us    1.11911 us    2.47048 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Hash Load Balancing
+  Kernel: _ZN8ebpf_gpu24batch_hash_load_balancerEPNS_12NetworkEventEm
+  Events: 10K
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:711
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Batch Hash Load Balancer - 10K                                                 
+events                                         100             1     3.7394 ms 
+                                        49.4274 us    48.6379 us    50.9004 us 
+                                        5.27888 us    3.27141 us    7.65107 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Hash Load Balancing
+  Kernel: _ZN8ebpf_gpu24batch_hash_load_balancerEPNS_12NetworkEventEm
+  Events: 100K
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:711
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Batch Hash Load Balancer - 100K                                                
+events                                         100             1    16.8132 ms 
+                                        200.974 us    199.218 us    207.299 us 
+                                        15.4378 us     3.8188 us    35.7718 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Hash Load Balancing
+  Kernel: _ZN8ebpf_gpu24batch_hash_load_balancerEPNS_12NetworkEventEm
+  Events: 1M
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:711
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Batch Hash Load Balancer - 1M                                                  
+events                                         100             1    97.8394 ms 
+                                        995.047 us    990.626 us    1.01468 ms 
+                                        40.9962 us    5.36422 us    97.0468 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Hash Distribution Quality
+  Pattern: Sequential IPs
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:822
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Hash Distribution - Sequential IPs             100             1     2.8602 ms 
+                                        42.5633 us     41.442 us    44.1914 us 
+                                        6.80914 us    5.06286 us     8.5823 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Hash Distribution Quality
+  Pattern: Random IPs
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:822
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Hash Distribution - Random IPs                 100             1     2.8665 ms 
+                                        42.1359 us    41.1014 us    43.7475 us 
+                                         6.4766 us    4.65511 us    8.46957 us 
+                                                                               
+
+-------------------------------------------------------------------------------
+Performance - Hash Distribution Quality
+  Pattern: Sequential Ports
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:822
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Hash Distribution - Sequential                                                 
+Ports                                          100             1     2.8624 ms 
+                                        41.2339 us    40.4203 us    43.0304 us 
+                                        5.84569 us    3.05713 us    9.75368 us 
+                                                                               
+
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:915: FAILED:
+  REQUIRE( coefficient_of_variation < 0.15 )
+with expansion:
+  0.5328864795 < 0.15
+with messages:
+  Hash distribution for Sequential Ports:
+    Mean: 1250, Std Dev: 666.108
+    Coefficient of Variation: 0.532886
+
+-------------------------------------------------------------------------------
+Performance - Hash Distribution Quality
+  Pattern: Mixed Patterns
+-------------------------------------------------------------------------------
+/root/yunwei37/eBPF-on-GPU/tests/test_performance.cpp:822
+...............................................................................
+
+benchmark name                       samples       iterations    estimated
+                                     mean          low mean      high mean
+                                     std dev       low std dev   high std dev
+-------------------------------------------------------------------------------
+Hash Distribution - Mixed Patterns             100             1     9.2128 ms 
+                                        121.703 us    119.539 us    126.258 us 
+                                        15.3972 us     8.0675 us     25.188 us 
+                                                                               
+
+===============================================================================
+test cases:  10 |   9 passed | 1 failed
+assertions: 929 | 928 passed | 1 failed
+
