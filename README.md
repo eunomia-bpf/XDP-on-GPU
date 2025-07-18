@@ -350,15 +350,34 @@ Hash LB: GPU ~0.94ns/packet, CPU ~12.78ns/packet
 
 Note: CPU measurements are single-threaded. Multi-core scaling would improve CPU performance linearly with core count.
 
+## 🔮 Future Plans & Integration
+
+### eBPF to GPU Compilation (WIP)
+
+We're integrating **llvmbpf** to enable direct compilation of eBPF bytecode to GPU kernels:
+
+```bash
+# Future workflow (under development):
+clang -target bpf -c xdp_prog.c -o xdp_prog.o
+llvmbpf --target=cuda xdp_prog.o -o xdp_prog.cu
+./ebpf-gpu-loader xdp_prog.cu
+```
+
+The `third_party/llvmbpf` submodule provides:
+- eBPF bytecode to LLVM IR translation
+- JIT/AOT compilation capabilities
+- Foundation for GPU kernel generation from eBPF programs
+
 ## 🤝 Contributing
 
 We welcome contributions! Areas of interest:
 
-- eBPF bytecode to GPU kernel translation
+- eBPF bytecode to GPU kernel translation (using llvmbpf)
 - XDP feature parity (metadata, helpers)
 - Performance optimizations
 - Additional backends (Intel GPU, AMD GPU)
 - Integration with kernel XDP
+- eBPF verifier for GPU safety
 
 ## 📚 Resources
 
