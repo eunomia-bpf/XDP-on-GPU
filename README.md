@@ -1,5 +1,7 @@
 # eBPF XDP on GPU
 
+> ⚠️ **Work in Progress (WIP)**: This project is under active development. APIs may change, and some features are still being implemented.
+
 A high-performance packet processing framework that brings the power of eBPF/XDP (eXpress Data Path) to GPU acceleration. This project enables XDP-style packet filtering and processing at unprecedented speeds by leveraging GPU parallelism while maintaining the familiar eBPF programming model.
 
 ## 🎯 What is eBPF XDP on GPU?
