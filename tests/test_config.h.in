@@ -1,0 +1,6 @@
+#ifndef TEST_CONFIG_H
+#define TEST_CONFIG_H
+
+#define PTX_FILE_PATH "${PTX_OUTPUT_FILE}"
+
+#endif // TEST_CONFIG_H

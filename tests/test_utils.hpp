@@ -9,6 +9,10 @@
 #include <type_traits>
 #include <iostream>
 
+#ifdef USE_CUDA_BACKEND
+#include "test_config.h"
+#endif
+
 // Put NetworkEvent in the ebpf_gpu namespace to match the expected kernel signature
 namespace ebpf_gpu {
 

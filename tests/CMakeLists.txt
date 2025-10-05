@@ -52,24 +52,30 @@ if(USE_CUDA)
     # Create a target for PTX generation
     add_custom_target(generate_ptx DEPENDS ${PTX_OUTPUT_FILE})
     
-    # Test kernels
-    add_library(test_kernels OBJECT
+    # Test kernels - use STATIC library instead of OBJECT to avoid device linking issues
+    add_library(test_kernels STATIC
         cuda_kernels.cu
     )
-    
+
     set_target_properties(test_kernels PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
+        CUDA_RESOLVE_DEVICE_SYMBOLS ON
         POSITION_INDEPENDENT_CODE ON
     )
-    
+
     # Define test configuration
-    set(TEST_DEFINITIONS 
-        PTX_FILE_PATH="${PTX_OUTPUT_FILE}"
+    set(TEST_DEFINITIONS
         CUDA_ARCH_SM=${PTX_ARCH}
         USE_CUDA_BACKEND
     )
-    
-    set(TEST_KERNEL_OBJECTS $<TARGET_OBJECTS:test_kernels>)
+
+    # Create a config header for the PTX file path
+    configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_config.h.in
+        ${CMAKE_CURRENT_BINARY_DIR}/test_config.h
+    )
+
+    set(TEST_KERNEL_LIBRARY test_kernels)
     set(TEST_PTX_DEPENDENCY generate_ptx)
     
 elseif(USE_OPENCL)
@@ -77,24 +83,30 @@ elseif(USE_OPENCL)
     set(TEST_DEFINITIONS
         USE_OPENCL_BACKEND
     )
-    
-    set(TEST_KERNEL_OBJECTS "")
+
+    set(TEST_KERNEL_LIBRARY "")
     set(TEST_PTX_DEPENDENCY "")
 endif()
 
 # Performance tests (GPU only)
 add_executable(test_performance
     test_performance.cpp
-    ${TEST_KERNEL_OBJECTS}
 )
 
-target_link_libraries(test_performance 
+target_include_directories(test_performance PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+target_link_libraries(test_performance
     ebpf_gpu_processor
     Catch2::Catch2WithMain
+    ${TEST_KERNEL_LIBRARY}
 )
 
 if(USE_CUDA)
     add_dependencies(test_performance ${TEST_PTX_DEPENDENCY})
+    set_target_properties(test_performance PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    )
 endif()
 
 target_compile_definitions(test_performance PRIVATE ${TEST_DEFINITIONS})
@@ -102,16 +114,22 @@ target_compile_definitions(test_performance PRIVATE ${TEST_DEFINITIONS})
 # CPU Performance tests (benchmarks)
 add_executable(test_performance_cpu
     test_performance_cpu.cpp
-    ${TEST_KERNEL_OBJECTS}
 )
 
-target_link_libraries(test_performance_cpu 
+target_include_directories(test_performance_cpu PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+target_link_libraries(test_performance_cpu
     ebpf_gpu_processor
     Catch2::Catch2WithMain
+    ${TEST_KERNEL_LIBRARY}
 )
 
 if(USE_CUDA)
     add_dependencies(test_performance_cpu ${TEST_PTX_DEPENDENCY})
+    set_target_properties(test_performance_cpu PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    )
 endif()
 
 target_compile_definitions(test_performance_cpu PRIVATE ${TEST_DEFINITIONS})
@@ -119,16 +137,22 @@ target_compile_definitions(test_performance_cpu PRIVATE ${TEST_DEFINITIONS})
 # Integration tests
 add_executable(test_integration
     test_integration.cpp
-    ${TEST_KERNEL_OBJECTS}
 )
 
-target_link_libraries(test_integration 
+target_include_directories(test_integration PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+target_link_libraries(test_integration
     ebpf_gpu_processor
     Catch2::Catch2WithMain
+    ${TEST_KERNEL_LIBRARY}
 )
 
 if(USE_CUDA)
     add_dependencies(test_integration ${TEST_PTX_DEPENDENCY})
+    set_target_properties(test_integration PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    )
 endif()
 
 target_compile_definitions(test_integration PRIVATE ${TEST_DEFINITIONS})

@@ -2,7 +2,10 @@
 # Simple build system wrapper for CMake
 
 BUILD_TYPE ?= Release
+# Build tests by default for benchmarks
 BUILD_TESTS ?= ON
+BUILD_DIR ?= build
+JOBS ?= $(shell nproc)
 BUILD_DIR ?= build
 JOBS ?= $(shell nproc)
 
